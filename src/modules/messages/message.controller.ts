@@ -41,15 +41,25 @@ export const getConversationMessages = async (
   }
 
   const { conversationId } = req.params;
+  const page =
+    typeof req.query.page === "string"
+      ? parseInt(req.query.page, 10)
+      : undefined;
+  const limit =
+    typeof req.query.limit === "string"
+      ? parseInt(req.query.limit, 10)
+      : undefined;
 
-  const messages = await messageService.getConversationMessages(
+  const result = await messageService.getConversationMessages(
     conversationId,
     authUser.userId,
+    { page, limit },
   );
 
   res.status(200).json({
     success: true,
-    data: messages,
+    data: result.items,
+    pagination: result.pagination,
   });
 };
 

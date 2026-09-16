@@ -35,13 +35,24 @@ export const getUserConversations = async (
     throw new AppError("Authentication required", 401, "UNAUTHORIZED");
   }
 
-  const conversations = await conversationService.getUserConversations(
+  const page =
+    typeof req.query.page === "string"
+      ? parseInt(req.query.page, 10)
+      : undefined;
+  const limit =
+    typeof req.query.limit === "string"
+      ? parseInt(req.query.limit, 10)
+      : undefined;
+
+  const result = await conversationService.getUserConversations(
     authUser.userId,
+    { page, limit },
   );
 
   res.status(200).json({
     success: true,
-    data: conversations,
+    data: result.items,
+    pagination: result.pagination,
   });
 };
 

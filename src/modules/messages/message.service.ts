@@ -6,6 +6,13 @@ import {
 import * as messageRepository from "./message.repository.js";
 import { CONVERSATION_STATUSES } from "../conversations/conversation.model.js";
 import * as conversationRepository from "../conversations/conversation.repository.js";
+import {
+  calculatePagination,
+  DEFAULT_LIMIT,
+  DEFAULT_PAGE,
+  toPaginatedResult,
+} from "../../utils/pagination.js";
+import type { PaginationOptions } from "../../utils/pagination.js";
 
 export type CreateUserMessageInput = {
   content: string;
@@ -94,6 +101,7 @@ export const getMessageById = async (
 export const getConversationMessages = async (
   conversationId: string,
   userId: string,
+  options?: PaginationOptions,
 ) => {
   const conversation =
     await conversationRepository.findConversationByIdAndUserId(
@@ -109,5 +117,16 @@ export const getConversationMessages = async (
     );
   }
 
-  return messageRepository.findMessagesByConversationId(conversationId);
+  const page = options?.page ?? DEFAULT_PAGE;
+  const limit = options?.limit ?? DEFAULT_LIMIT;
+
+  const { items, total } =
+    await messageRepository.findPaginatedMessagesByConversationId(
+      conversationId,
+      { page, limit },
+    );
+
+  const pagination = calculatePagination(total, page, limit);
+
+  return toPaginatedResult(items, pagination);
 };

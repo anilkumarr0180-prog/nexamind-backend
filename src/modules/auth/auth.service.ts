@@ -1,6 +1,7 @@
 import { AppError } from "../../errors/app.error.js";
 import { USER_STATUSES } from "../users/user.model.js";
 import * as userRepository from "../users/user.repository.js";
+import * as tokenService from "../tokens/token.service.js";
 import { hashPassword, verifyPassword } from "../../utils/password.js";
 import { generateAccessToken } from "../../utils/jwt.js";
 import type { LoginInput, RegisterInput } from "./auth.validation.js";
@@ -74,6 +75,8 @@ export const register = async (input: RegisterInput): Promise<AuthResult> => {
 
     throw error;
   }
+
+  await tokenService.initializeBalance(user._id.toString());
 
   const accessToken = generateAccessToken({
     sub: user._id.toString(),

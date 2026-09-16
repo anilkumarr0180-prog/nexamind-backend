@@ -5,6 +5,7 @@ import {
   createConversationSchema,
   deleteConversationSchema,
   getConversationByIdSchema,
+  getConversationsSchema,
   unarchiveConversationSchema,
   updateConversationSchema,
 } from "./conversation.validation.js";
@@ -23,6 +24,7 @@ router.post(
 
 router.get(
   "/",
+  validate(getConversationsSchema),
   conversationController.getUserConversations,
 );
 
