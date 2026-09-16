@@ -58,10 +58,13 @@ const envSchema = z.object({
     .default("15m"),
 
   AI_PROVIDER: z
+    .enum(["ollama", "groq"])
+    .default("ollama"),
+
+  GROQ_API_KEY: z
     .string()
     .trim()
-    .min(1)
-    .default("ollama"),
+    .optional(),
 
   AI_MODEL: z
     .string()
@@ -146,6 +149,14 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(50),
+}).superRefine((data, ctx) => {
+  if (data.AI_PROVIDER === "groq" && (!data.GROQ_API_KEY || data.GROQ_API_KEY.trim().length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "GROQ_API_KEY is required when AI_PROVIDER is set to groq",
+      path: ["GROQ_API_KEY"],
+    });
+  }
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

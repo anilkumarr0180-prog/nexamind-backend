@@ -16,6 +16,7 @@ import type {
   AIResponse,
 } from "./providers/ai-provider.interface.js";
 import { OllamaProvider } from "./providers/ollama.provider.js";
+import { GroqProvider } from "./providers/groq.provider.js";
 
 export const DEFAULT_CHAT_CREDIT_COST = 1;
 
@@ -62,7 +63,14 @@ export type OrchestratedChatResult = {
   } | null;
 };
 
-let defaultProvider: AIProvider = new OllamaProvider();
+const createDefaultProvider = (): AIProvider => {
+  if (env.AI_PROVIDER === "groq") {
+    return new GroqProvider();
+  }
+  return new OllamaProvider();
+};
+
+let defaultProvider: AIProvider = createDefaultProvider();
 
 export const setDefaultProvider = (provider: AIProvider): void => {
   defaultProvider = provider;
