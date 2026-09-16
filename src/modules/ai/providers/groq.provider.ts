@@ -38,7 +38,7 @@ export class GroqProvider implements AIProvider {
 
   constructor(apiKey?: string, defaultModel?: string, timeoutMs?: number) {
     this.apiKey = (apiKey ?? env.GROQ_API_KEY ?? "").trim();
-    this.defaultModel = defaultModel ?? env.AI_MODEL;
+    this.defaultModel = defaultModel ?? env.AI_MODEL ?? "qwen/qwen3.8-27b";
     this.timeoutMs = timeoutMs ?? env.OLLAMA_TIMEOUT_MS;
     this.apiUrl = "https://api.groq.com/openai/v1/chat/completions";
   }
