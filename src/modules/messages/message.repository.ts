@@ -4,6 +4,7 @@ import {
   MESSAGE_ROLES,
   MESSAGE_STATUSES,
 } from "./message.model.js";
+import type { PaginationOptions } from "../../utils/pagination.js";
 
 export type MessageRole =
   (typeof MESSAGE_ROLES)[keyof typeof MESSAGE_ROLES];
@@ -44,8 +45,56 @@ export const findMessagesByConversationId = async (
   return Message.find({ conversationId }).sort({ createdAt: 1 });
 };
 
+export const findPaginatedMessagesByConversationId = async (
+  conversationId: string | Types.ObjectId,
+  options?: PaginationOptions,
+) => {
+  const page = options?.page ?? 1;
+  const limit = options?.limit ?? 20;
+  const skip = (page - 1) * limit;
+
+  const [items, total] = await Promise.all([
+    Message.find({ conversationId })
+      .sort({ createdAt: 1, _id: 1 })
+      .skip(skip)
+      .limit(limit),
+    Message.countDocuments({ conversationId }),
+  ]);
+
+  return {
+    items,
+    total,
+  };
+};
+
 export const countMessagesByConversationId = async (
   conversationId: string | Types.ObjectId,
 ) => {
   return Message.countDocuments({ conversationId });
 };
+
+export const updateMessageStatus = async (
+  messageId: string | Types.ObjectId,
+  status: MessageStatus,
+) => {
+  return Message.findByIdAndUpdate(
+    messageId,
+    { status },
+    { returnDocument: "after" },
+  );
+};
+
+export const findRecentMessagesForContext = async (
+  conversationId: string | Types.ObjectId,
+  limit: number,
+) => {
+  const docs = await Message.find({
+    conversationId,
+    status: MESSAGE_STATUSES.COMPLETED,
+  })
+    .sort({ createdAt: -1, _id: -1 })
+    .limit(limit);
+
+  return docs.reverse();
+};
+

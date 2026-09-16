@@ -1,7 +1,27 @@
 import { z } from "zod";
 import { CONVERSATION_STATUSES } from "./conversation.model.js";
+import { MAX_LIMIT } from "../../utils/pagination.js";
 
 const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+
+export const getConversationsSchema = z.object({
+  params: z.object({}).optional(),
+  body: z.object({}).optional(),
+  query: z
+    .object({
+      page: z
+        .string()
+        .regex(/^[1-9]\d*$/, "Page must be a positive integer starting from 1")
+        .optional(),
+      limit: z
+        .string()
+        .regex(/^[1-9]\d*$/, "Limit must be a positive integer")
+        .refine((val) => Number(val) <= MAX_LIMIT, `Limit cannot exceed ${MAX_LIMIT}`)
+        .optional(),
+    })
+    .strict()
+    .optional(),
+});
 
 export const createConversationSchema = z.object({
   params: z.object({}).optional(),
@@ -108,3 +128,6 @@ export type UnarchiveConversationParams = z.infer<
 export type DeleteConversationParams = z.infer<
   typeof deleteConversationSchema
 >["params"];
+export type GetConversationsQuery = z.infer<
+  typeof getConversationsSchema
+>["query"];

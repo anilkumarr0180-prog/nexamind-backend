@@ -1,6 +1,6 @@
 import { Router } from "express";
-import * as userController from "./user.controller.js";
-import { getUserByIdSchema } from "./user.validation.js";
+import * as tokenController from "./token.controller.js";
+import { getBalanceSchema } from "./token.validation.js";
 import { validate } from "../../middleware/validate.js";
 import { authenticate } from "../../middleware/auth.js";
 
@@ -9,9 +9,9 @@ const router = Router();
 router.use(authenticate);
 
 router.get(
-  "/:userId",
-  validate(getUserByIdSchema),
-  userController.getUserById,
+  "/balance",
+  validate(getBalanceSchema),
+  tokenController.getBalance,
 );
 
 export default router;

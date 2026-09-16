@@ -5,6 +5,13 @@ import type {
   ConversationStatus,
   UpdateConversationData,
 } from "./conversation.repository.js";
+import {
+  calculatePagination,
+  DEFAULT_LIMIT,
+  DEFAULT_PAGE,
+  toPaginatedResult,
+} from "../../utils/pagination.js";
+import type { PaginationOptions } from "../../utils/pagination.js";
 
 export type CreateConversationInput = {
   title: string;
@@ -59,8 +66,22 @@ export const getConversationById = async (
   return conversation;
 };
 
-export const getUserConversations = async (userId: string) => {
-  return conversationRepository.findConversationsByUserId(userId);
+export const getUserConversations = async (
+  userId: string,
+  options?: PaginationOptions,
+) => {
+  const page = options?.page ?? DEFAULT_PAGE;
+  const limit = options?.limit ?? DEFAULT_LIMIT;
+
+  const { items, total } =
+    await conversationRepository.findPaginatedConversationsByUserId(userId, {
+      page,
+      limit,
+    });
+
+  const pagination = calculatePagination(total, page, limit);
+
+  return toPaginatedResult(items, pagination);
 };
 
 export const updateConversation = async (

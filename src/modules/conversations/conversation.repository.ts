@@ -3,6 +3,7 @@ import {
   Conversation,
   CONVERSATION_STATUSES,
 } from "./conversation.model.js";
+import type { PaginationOptions } from "../../utils/pagination.js";
 
 export type ConversationStatus =
   (typeof CONVERSATION_STATUSES)[keyof typeof CONVERSATION_STATUSES];
@@ -62,6 +63,28 @@ export const findConversationsByUserId = async (
   userId: string | Types.ObjectId,
 ) => {
   return Conversation.find({ userId, deletedAt: null }).sort({ updatedAt: -1 });
+};
+
+export const findPaginatedConversationsByUserId = async (
+  userId: string | Types.ObjectId,
+  options?: PaginationOptions,
+) => {
+  const page = options?.page ?? 1;
+  const limit = options?.limit ?? 20;
+  const skip = (page - 1) * limit;
+
+  const [items, total] = await Promise.all([
+    Conversation.find({ userId, deletedAt: null })
+      .sort({ updatedAt: -1, _id: -1 })
+      .skip(skip)
+      .limit(limit),
+    Conversation.countDocuments({ userId, deletedAt: null }),
+  ]);
+
+  return {
+    items,
+    total,
+  };
 };
 
 export const updateConversation = async (

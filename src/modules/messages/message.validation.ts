@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_LIMIT } from "../../utils/pagination.js";
 
 const objectIdRegex = /^[0-9a-fA-F]{24}$/;
 
@@ -31,7 +32,20 @@ export const getConversationMessagesSchema = z.object({
       "Invalid conversation ID",
     ),
   }),
-  query: z.object({}).optional(),
+  query: z
+    .object({
+      page: z
+        .string()
+        .regex(/^[1-9]\d*$/, "Page must be a positive integer starting from 1")
+        .optional(),
+      limit: z
+        .string()
+        .regex(/^[1-9]\d*$/, "Limit must be a positive integer")
+        .refine((val) => Number(val) <= MAX_LIMIT, `Limit cannot exceed ${MAX_LIMIT}`)
+        .optional(),
+    })
+    .strict()
+    .optional(),
 });
 
 export const getMessageByIdSchema = z.object({
@@ -57,3 +71,6 @@ export type GetConversationMessagesParams = z.infer<
 export type GetMessageByIdParams = z.infer<
   typeof getMessageByIdSchema
 >["params"];
+export type GetConversationMessagesQuery = z.infer<
+  typeof getConversationMessagesSchema
+>["query"];
