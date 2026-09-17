@@ -13,6 +13,8 @@ import { errorHandler } from "./middleware/error-handler.js";
 
 const app = express();
 
+app.set("trust proxy", 1);
+
 app.use(morgan("dev"));
 // Enable CORS with explicit allowlist from environment
 app.use(
