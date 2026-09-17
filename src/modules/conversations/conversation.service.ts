@@ -301,3 +301,29 @@ export const deleteConversation = async (
     "CONVERSATION_NOT_FOUND",
   );
 };
+
+export const getConversationSummary = async (
+  conversationId: string,
+  userId: string,
+) => {
+  const conversation =
+    await conversationRepository.findConversationByIdAndUserId(
+      conversationId,
+      userId,
+    );
+
+  if (!conversation) {
+    throw new AppError(
+      "Conversation not found",
+      404,
+      "CONVERSATION_NOT_FOUND",
+    );
+  }
+
+  return {
+    conversationId: conversation._id.toString(),
+    summary: conversation.summary ?? null,
+    summaryUpdatedAt: conversation.summaryUpdatedAt ?? null,
+    lastSummarizedMessageCount: conversation.lastSummarizedMessageCount ?? 0,
+  };
+};

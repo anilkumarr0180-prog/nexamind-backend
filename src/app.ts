@@ -9,6 +9,7 @@ import messageRoutes from "./modules/messages/message.routes.js";
 import tokenRoutes from "./modules/tokens/token.routes.js";
 import aiRoutes from "./modules/ai/ai.routes.js";
 import memoryRoutes from "./modules/memory/memory.routes.js";
+import agentRoutes from "./modules/agent/agent.routes.js";
 import { errorHandler } from "./middleware/error-handler.js";
 
 const app = express();
@@ -43,6 +44,7 @@ app.use("/api/v1", messageRoutes);
 app.use("/api/v1/tokens", tokenRoutes);
 app.use("/api/v1/ai", aiRoutes);
 app.use("/api/v1/memories", memoryRoutes);
+app.use("/api/v1/agent", agentRoutes);
 
 app.use(errorHandler);
 

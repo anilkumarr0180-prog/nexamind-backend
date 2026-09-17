@@ -29,6 +29,12 @@ router.get(
 );
 
 router.get(
+  "/:conversationId/summary",
+  validate(getConversationByIdSchema),
+  conversationController.getConversationSummary,
+);
+
+router.get(
   "/:conversationId",
   validate(getConversationByIdSchema),
   conversationController.getConversationById,

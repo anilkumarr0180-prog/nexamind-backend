@@ -55,14 +55,14 @@ export const findPaginatedMessagesByConversationId = async (
 
   const [items, total] = await Promise.all([
     Message.find({ conversationId })
-      .sort({ createdAt: 1, _id: 1 })
+      .sort({ createdAt: -1, _id: -1 })
       .skip(skip)
       .limit(limit),
     Message.countDocuments({ conversationId }),
   ]);
 
   return {
-    items,
+    items: items.reverse(),
     total,
   };
 };

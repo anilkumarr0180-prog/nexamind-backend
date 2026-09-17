@@ -42,6 +42,21 @@ const TEST_SUITES: TestSuite[] = [
     file: "credit-failure.test.ts",
   },
   {
+    id: "streaming-chat",
+    name: "Chat UX Batch 2: Streaming & Stop Generating",
+    file: "streaming-chat.test.ts",
+  },
+  {
+    id: "cross-conversation-context",
+    name: "Chat UX Batch 3: Cross-Conversation Context",
+    file: "cross-conversation-context.test.ts",
+  },
+  {
+    id: "conversation-summary",
+    name: "Chat UX Batch 4: Conversation Summaries & Continuity",
+    file: "conversation-summary.test.ts",
+  },
+  {
     id: "ai-orchestrator",
     name: "AI Orchestrator & F14 Canonical Route",
     file: "ai-orchestrator.test.ts",
@@ -80,6 +95,46 @@ const TEST_SUITES: TestSuite[] = [
     id: "memory-semantic",
     name: "M5: Semantic Memory Intelligence",
     file: "memory-semantic.test.ts",
+  },
+  {
+    id: "agent-tool-executor",
+    name: "Agent Core: Tool Executor",
+    file: "agent-tool-executor.test.ts",
+  },
+  {
+    id: "agent-calculator-tool",
+    name: "Agent Core: Calculator Tool",
+    file: "agent-calculator-tool.test.ts",
+  },
+  {
+    id: "agent-loop",
+    name: "Agent Core: Agent Loop",
+    file: "agent-loop.test.ts",
+  },
+  {
+    id: "agent-service",
+    name: "Agent Core: Agent Service",
+    file: "agent-service.test.ts",
+  },
+  {
+    id: "agent-api",
+    name: "Agent Core: Agent API",
+    file: "agent-api.test.ts",
+  },
+  {
+    id: "agent-e2e",
+    name: "Agent Core: End-to-End Verification",
+    file: "agent-e2e.test.ts",
+  },
+  {
+    id: "agent-shared-context",
+    name: "Agent Core: Shared Context Integration",
+    file: "agent-shared-context.test.ts",
+  },
+  {
+    id: "agent-streaming",
+    name: "Agent Core: Streaming & Stop Agent",
+    file: "agent-streaming.test.ts",
   },
 ];
 

@@ -44,6 +44,24 @@ const conversationSchema = new Schema(
       type: Date,
       default: null,
     },
+
+    summary: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 2000,
+    },
+
+    summaryUpdatedAt: {
+      type: Date,
+      default: null,
+    },
+
+    lastSummarizedMessageCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
   },
   {
     timestamps: true,
