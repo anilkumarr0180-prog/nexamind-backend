@@ -29,6 +29,9 @@ type GroqChatCompletionResponse = {
   };
 };
 
+const DEFAULT_RECOMMENDED_MODEL = "llama-3.3-70b-versatile";
+const HIGH_CAPACITY_FALLBACK_MODEL = "llama-3.1-8b-instant";
+
 export class GroqProvider implements AIProvider {
   public readonly name = "groq";
   private readonly apiKey: string;
@@ -38,14 +41,19 @@ export class GroqProvider implements AIProvider {
 
   constructor(apiKey?: string, defaultModel?: string, timeoutMs?: number) {
     this.apiKey = (apiKey ?? env.GROQ_API_KEY ?? "").trim();
-    this.defaultModel = defaultModel ?? env.AI_MODEL ?? "qwen/qwen3.8-27b";
+    const rawModel = defaultModel ?? env.AI_MODEL;
+    // Automatically sanitize and upgrade low-quota preview models like qwen to high-quota llama models
+    this.defaultModel =
+      !rawModel || rawModel.includes("qwen")
+        ? DEFAULT_RECOMMENDED_MODEL
+        : rawModel;
     this.timeoutMs = timeoutMs ?? env.OLLAMA_TIMEOUT_MS;
     this.apiUrl = "https://api.groq.com/openai/v1/chat/completions";
   }
 
   async generateChatResponse(
     messages: AIMessage[],
-    options?: { model?: string },
+    options?: { model?: string; maxTokens?: number },
   ): Promise<AIResponse> {
     if (!this.apiKey) {
       throw new AppError(
@@ -55,7 +63,11 @@ export class GroqProvider implements AIProvider {
       );
     }
 
-    const model = options?.model ?? this.defaultModel;
+    let targetModel = options?.model ?? this.defaultModel;
+    if (targetModel.includes("qwen")) {
+      targetModel = DEFAULT_RECOMMENDED_MODEL;
+    }
+    const maxTokens = options?.maxTokens ?? 1024;
 
     try {
       const response = await fetch(this.apiUrl, {
@@ -65,11 +77,12 @@ export class GroqProvider implements AIProvider {
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({
-          model,
+          model: targetModel,
           messages: messages.map((m) => ({
             role: m.role,
             content: m.content,
           })),
+          max_tokens: maxTokens,
           stream: false,
         }),
         signal: AbortSignal.timeout(this.timeoutMs),
@@ -79,6 +92,18 @@ export class GroqProvider implements AIProvider {
 
       if (!response.ok) {
         const errorMsg = data?.error?.message || `HTTP ${response.status}`;
+
+        // If rate limited (429) on primary model, seamlessly retry with high-capacity model
+        if (response.status === 429 && targetModel !== HIGH_CAPACITY_FALLBACK_MODEL) {
+          console.warn(
+            `[GroqProvider] Rate limit (429) on ${targetModel}. Seamlessly retrying with ${HIGH_CAPACITY_FALLBACK_MODEL}...`,
+          );
+          return this.generateChatResponse(messages, {
+            model: HIGH_CAPACITY_FALLBACK_MODEL,
+            maxTokens: 800,
+          });
+        }
+
         if (response.status === 401) {
           throw new AppError(
             `Invalid Groq API key: ${errorMsg}`,
@@ -116,7 +141,7 @@ export class GroqProvider implements AIProvider {
       return {
         content: firstChoice.message.content,
         provider: this.name,
-        model: data.model || model,
+        model: data.model || targetModel,
         usage: {
           inputTokens,
           outputTokens,
