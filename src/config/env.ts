@@ -69,7 +69,7 @@ const envSchema = z.object({
   AI_MODEL: z
     .string()
     .trim()
-    .default("groq/compound-mini"),
+    .default("qwen/qwen3.8-27b"),
 
   AI_BASE_URL: z
     .string()
