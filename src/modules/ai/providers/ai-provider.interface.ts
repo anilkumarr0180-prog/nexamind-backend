@@ -22,6 +22,6 @@ export interface AIProvider {
   readonly name: string;
   generateChatResponse(
     messages: AIMessage[],
-    options?: { model?: string },
+    options?: { model?: string; maxTokens?: number },
   ): Promise<AIResponse>;
 }
