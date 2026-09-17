@@ -200,10 +200,19 @@ export const extractAndSaveMemories = async (
       }
 
       let embedding: number[] | undefined;
-      try {
-        embedding = await defaultEmbeddingProvider.generateEmbedding(trimmedContent);
-      } catch (embErr) {
-        // Non-fatal: proceed without embedding
+      const isLocalOllamaProvider =
+        defaultEmbeddingProvider instanceof OllamaEmbeddingProvider ||
+        defaultEmbeddingProvider.name === "ollama-embedding";
+
+      if (
+        env.AI_MEMORY_SEMANTIC_SEARCH_ENABLED &&
+        !(env.AI_PROVIDER === "groq" && isLocalOllamaProvider)
+      ) {
+        try {
+          embedding = await defaultEmbeddingProvider.generateEmbedding(trimmedContent);
+        } catch (embErr) {
+          // Non-fatal: proceed without embedding
+        }
       }
 
       // 4. Save new active memory
@@ -265,7 +274,16 @@ export const getSemanticMemoryContextForUser = async (
 ): Promise<string | null> => {
   const boundedLimit = Math.max(1, limit);
 
-  if (!env.AI_MEMORY_SEMANTIC_SEARCH_ENABLED || !query || !query.trim()) {
+  const isLocalOllamaProvider =
+    defaultEmbeddingProvider instanceof OllamaEmbeddingProvider ||
+    defaultEmbeddingProvider.name === "ollama-embedding";
+
+  if (
+    !env.AI_MEMORY_SEMANTIC_SEARCH_ENABLED ||
+    !query ||
+    !query.trim() ||
+    (env.AI_PROVIDER === "groq" && isLocalOllamaProvider)
+  ) {
     return getActiveMemoryContextForUser(userId, boundedLimit);
   }
 
@@ -320,10 +338,19 @@ export const createMemory = async (
   }
 
   let embedding: number[] | undefined;
-  try {
-    embedding = await defaultEmbeddingProvider.generateEmbedding(trimmedContent);
-  } catch (embErr) {
-    // Non-fatal: proceed without embedding
+  const isLocalOllamaProvider =
+    defaultEmbeddingProvider instanceof OllamaEmbeddingProvider ||
+    defaultEmbeddingProvider.name === "ollama-embedding";
+
+  if (
+    env.AI_MEMORY_SEMANTIC_SEARCH_ENABLED &&
+    !(env.AI_PROVIDER === "groq" && isLocalOllamaProvider)
+  ) {
+    try {
+      embedding = await defaultEmbeddingProvider.generateEmbedding(trimmedContent);
+    } catch (embErr) {
+      // Non-fatal: proceed without embedding
+    }
   }
 
   return memoryRepository.createMemory({
