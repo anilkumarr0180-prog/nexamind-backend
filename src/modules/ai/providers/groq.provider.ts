@@ -29,21 +29,20 @@ type GroqChatCompletionResponse = {
   };
 };
 
-const DEFAULT_RECOMMENDED_MODEL = "groq/compound-mini";
-const FALLBACK_MODEL = "qwen/qwen3.8-27b";
+const DEFAULT_RECOMMENDED_MODEL = "qwen/qwen3.8-27b";
+const FALLBACK_MODEL = "groq/compound-mini";
 
 function resolveValidModel(rawModel?: string): string {
   if (!rawModel) return DEFAULT_RECOMMENDED_MODEL;
   const m = rawModel.trim().toLowerCase();
-  // If requesting deprecated llama-3.x models that do not exist on Groq, upgrade to compound-mini
   if (m.includes("llama-3") || m.includes("llama3")) {
     return DEFAULT_RECOMMENDED_MODEL;
   }
-  if (m.includes("compound")) {
-    return m.includes("mini") ? "groq/compound-mini" : "groq/compound";
-  }
   if (m.includes("qwen")) {
     return "qwen/qwen3.8-27b";
+  }
+  if (m.includes("compound")) {
+    return "groq/compound-mini";
   }
   return rawModel.trim();
 }
@@ -76,8 +75,14 @@ export class GroqProvider implements AIProvider {
     }
 
     let targetModel = resolveValidModel(options?.model ?? this.defaultModel);
-    // Safe output token clamping to guarantee pre-flight limits are never tripped
-    const maxTokens = options?.maxTokens ?? (targetModel.includes("qwen") ? 600 : 800);
+    // Strict safe output token clamping (600 tokens max) to guarantee pre-flight OTPM limits
+    const maxTokens = options?.maxTokens ?? 600;
+
+    // Prune excessive context to prevent payload size / 413 issues
+    const sanitizedMessages = messages.map((m) => ({
+      role: m.role,
+      content: typeof m.content === "string" ? m.content.slice(0, 8000) : "",
+    }));
 
     try {
       const response = await fetch(this.apiUrl, {
@@ -88,10 +93,7 @@ export class GroqProvider implements AIProvider {
         },
         body: JSON.stringify({
           model: targetModel,
-          messages: messages.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
+          messages: sanitizedMessages,
           max_tokens: maxTokens,
           stream: false,
         }),
@@ -103,32 +105,31 @@ export class GroqProvider implements AIProvider {
       if (!response.ok) {
         const errorMsg = data?.error?.message || `HTTP ${response.status}`;
 
-        // 1. If model not found / deprecated (404 or "does not exist"), auto-heal with DEFAULT_RECOMMENDED_MODEL
+        // 1. Model not found or deprecated: auto-heal with DEFAULT_RECOMMENDED_MODEL
         if (
           (response.status === 404 || errorMsg.toLowerCase().includes("does not exist")) &&
           targetModel !== DEFAULT_RECOMMENDED_MODEL
         ) {
           console.warn(
-            `[GroqProvider] Model "${targetModel}" does not exist on Groq. Auto-recovering with ${DEFAULT_RECOMMENDED_MODEL}...`,
+            `[GroqProvider] Model "${targetModel}" not found. Auto-recovering with ${DEFAULT_RECOMMENDED_MODEL}...`,
           );
           return this.generateChatResponse(messages, {
             model: DEFAULT_RECOMMENDED_MODEL,
-            maxTokens: 800,
+            maxTokens: 600,
           });
         }
 
-        // 2. If rate limited (429), seamlessly switch between compound-mini and qwen
-        if (response.status === 429) {
+        // 2. Rate limit (429) OR Entity Too Large (413): seamless fallback retry
+        if (response.status === 429 || response.status === 413 || errorMsg.toLowerCase().includes("too large")) {
           const alternateModel =
             targetModel === DEFAULT_RECOMMENDED_MODEL ? FALLBACK_MODEL : DEFAULT_RECOMMENDED_MODEL;
-          const alternateTokens = alternateModel === FALLBACK_MODEL ? 500 : 800;
 
           console.warn(
-            `[GroqProvider] Rate limit (429) on ${targetModel}. Seamlessly retrying with ${alternateModel}...`,
+            `[GroqProvider] Error (${response.status}: ${errorMsg}) on ${targetModel}. Seamlessly retrying with ${alternateModel}...`,
           );
           return this.generateChatResponse(messages, {
             model: alternateModel,
-            maxTokens: alternateTokens,
+            maxTokens: 500,
           });
         }
 

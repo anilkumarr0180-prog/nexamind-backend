@@ -123,7 +123,7 @@ export const extractAndSaveMemories = async (
       { role: "user", content: userPrompt },
     ];
 
-    const response = await provider.generateChatResponse(extractionMessages, { maxTokens: 250 });
+    const response = await provider.generateChatResponse(extractionMessages, { maxTokens: 200 });
 
     // Clean potential markdown fences e.g. ```json ... ```
     let cleanContent = response.content.trim();
