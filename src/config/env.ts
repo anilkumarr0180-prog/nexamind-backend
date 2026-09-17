@@ -69,7 +69,7 @@ const envSchema = z.object({
   AI_MODEL: z
     .string()
     .trim()
-    .default("llama-3.3-70b-versatile"),
+    .default("groq/compound-mini"),
 
   AI_BASE_URL: z
     .string()
