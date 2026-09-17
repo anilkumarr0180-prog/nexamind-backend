@@ -69,7 +69,7 @@ const envSchema = z.object({
   AI_MODEL: z
     .string()
     .trim()
-    .min(1, "AI_MODEL is required"),
+    .default("llama-3.3-70b-versatile"),
 
   AI_BASE_URL: z
     .string()
