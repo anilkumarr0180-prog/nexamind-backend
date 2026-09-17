@@ -174,3 +174,25 @@ export const deleteConversation = async (
     data: conversation,
   });
 };
+
+export const getConversationSummary = async (
+  req: Request<{ conversationId: string }>,
+  res: Response,
+): Promise<void> => {
+  const authUser = req.user;
+  if (!authUser) {
+    throw new AppError("Authentication required", 401, "UNAUTHORIZED");
+  }
+
+  const { conversationId } = req.params;
+
+  const summaryData = await conversationService.getConversationSummary(
+    conversationId,
+    authUser.userId,
+  );
+
+  res.status(200).json({
+    success: true,
+    data: summaryData,
+  });
+};

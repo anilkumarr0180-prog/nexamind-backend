@@ -15,6 +15,9 @@ export type CreateConversationData = {
   lastMessageAt?: Date | null;
   messageCount?: number;
   deletedAt?: Date | null;
+  summary?: string | null;
+  summaryUpdatedAt?: Date | null;
+  lastSummarizedMessageCount?: number;
 };
 
 export type UpdateConversationData = {
@@ -23,6 +26,9 @@ export type UpdateConversationData = {
   lastMessageAt?: Date | null;
   messageCount?: number;
   deletedAt?: Date | null;
+  summary?: string | null;
+  summaryUpdatedAt?: Date | null;
+  lastSummarizedMessageCount?: number;
 };
 
 export const createConversation = async (data: CreateConversationData) => {
@@ -115,6 +121,48 @@ export const softDeleteConversation = async (
     },
     {
       deletedAt: new Date(),
+    },
+    { returnDocument: "after" },
+  );
+};
+
+export const findRecentOtherConversationsForUser = async (
+  userId: string | Types.ObjectId,
+  excludeConversationId?: string | Types.ObjectId,
+  limit: number = 2,
+) => {
+  const query: Record<string, unknown> = {
+    userId,
+    deletedAt: null,
+    messageCount: { $gt: 0 },
+  };
+
+  if (excludeConversationId) {
+    query._id = { $ne: excludeConversationId };
+  }
+
+  return Conversation.find(query)
+    .sort({ updatedAt: -1, _id: -1 })
+    .limit(limit)
+    .lean();
+};
+
+export const updateConversationSummary = async (
+  conversationId: string | Types.ObjectId,
+  userId: string | Types.ObjectId,
+  summary: string,
+  messageCount: number,
+) => {
+  return Conversation.findOneAndUpdate(
+    {
+      _id: conversationId,
+      userId,
+      deletedAt: null,
+    },
+    {
+      summary,
+      summaryUpdatedAt: new Date(),
+      lastSummarizedMessageCount: messageCount,
     },
     { returnDocument: "after" },
   );

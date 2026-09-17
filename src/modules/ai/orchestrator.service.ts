@@ -1,3 +1,5 @@
+import { summarizeConversationIfNeeded } from "../conversations/conversation-summary.service.js";
+import { buildFullChatContext } from "./context-builder.service.js";
 import type { Types } from "mongoose";
 import { env } from "../../config/env.js";
 import { AppError } from "../../errors/app.error.js";
@@ -14,6 +16,7 @@ import type {
   AIProvider,
   AIMessage,
   AIResponse,
+  AIUsage,
 } from "./providers/ai-provider.interface.js";
 import { OllamaProvider } from "./providers/ollama.provider.js";
 import { GroqProvider } from "./providers/groq.provider.js";
@@ -80,6 +83,7 @@ export const getDefaultProvider = (): AIProvider => {
   return defaultProvider;
 };
 
+export { buildFullChatContext };
 export const buildConversationContext = async (
   conversationId: string | Types.ObjectId,
   maxMessages: number = env.AI_MAX_CONTEXT_MESSAGES,
@@ -215,29 +219,14 @@ export const processChatRequest = async (
       usage: null,
     });
 
-    // 5b. Retrieve bounded semantic memory context (non-fatal; fail-open)
-    let memoryContext: string | null = null;
-    try {
-      memoryContext = await memoryService.getSemanticMemoryContextForUser(
-        userId,
-        trimmedContent,
-        env.AI_MAX_MEMORY_CONTEXT,
-      );
-    } catch (memoryError) {
-      console.error(
-        "Non-fatal error retrieving memory context for AI chat; proceeding without memory:",
-        memoryError,
-      );
-      memoryContext = null;
-    }
-
-    // 6. Build conversation context messages for AI provider
-    const aiMessages = await buildConversationContext(
-      conversation._id,
-      env.AI_MAX_CONTEXT_MESSAGES,
-      env.AI_MAX_CONTEXT_CHARS,
-      memoryContext,
-    );
+    // 6. Build conversation context messages for AI provider via Context Builder
+    const aiMessages = await buildFullChatContext({
+      userId,
+      conversationId: conversation._id,
+      userQuery: trimmedContent,
+      maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
+      maxChars: env.AI_MAX_CONTEXT_CHARS,
+    });
 
     // 7. Invoke AI Provider
     const aiResponse = await provider.generateChatResponse(aiMessages);
@@ -343,6 +332,18 @@ export const processChatRequest = async (
     );
   }
 
+  // 9c. Non-critical automatic conversation summarization (non-blocking)
+  summarizeConversationIfNeeded(
+    conversation._id.toString(),
+    userId,
+    provider,
+  ).catch((summaryError) => {
+    console.error(
+      "Non-fatal error during conversation summarization:",
+      summaryError,
+    );
+  });
+
   // 10. Return clean API response
   return {
     conversation: {
@@ -351,6 +352,350 @@ export const processChatRequest = async (
       status: updatedConversation?.status ?? conversation.status,
       messageCount:
         updatedConversation?.messageCount ?? totalMessages,
+      lastMessageAt:
+        updatedConversation?.lastMessageAt ??
+        assistantMessage.createdAt ??
+        new Date(),
+    },
+    userMessage: {
+      id: userMessage._id.toString(),
+      conversationId: userMessage.conversationId.toString(),
+      role: userMessage.role,
+      content: userMessage.content,
+      status: userMessage.status,
+      createdAt: userMessage.createdAt,
+    },
+    assistantMessage: {
+      id: assistantMessage._id.toString(),
+      conversationId: assistantMessage.conversationId.toString(),
+      role: assistantMessage.role,
+      content: assistantMessage.content,
+      status: assistantMessage.status,
+      model: assistantMessage.model ?? null,
+      provider: assistantMessage.provider ?? null,
+      usage: assistantMessage.usage ?? null,
+      createdAt: assistantMessage.createdAt,
+    },
+    usage: assistantMessage.usage ?? null,
+  };
+};
+
+
+export interface ChatStreamCallbacks {
+  onStart?: (data: {
+    userMessage: {
+      id: string;
+      conversationId: string;
+      role: string;
+      content: string;
+      status: string;
+      createdAt: Date;
+    };
+    conversationId: string;
+  }) => void;
+  onChunk: (chunk: string) => void;
+}
+
+export const processChatStream = async (
+  userId: string,
+  input: ChatRequestInput,
+  callbacks: ChatStreamCallbacks,
+  signal?: AbortSignal,
+  customProvider?: AIProvider,
+): Promise<OrchestratedChatResult | null> => {
+  const provider = customProvider ?? defaultProvider;
+
+  // 1. Verify conversation ownership and existence
+  const conversation =
+    await conversationRepository.findConversationByIdAndUserId(
+      input.conversationId,
+      userId,
+    );
+
+  if (!conversation) {
+    throw new AppError(
+      "Conversation not found",
+      404,
+      "CONVERSATION_NOT_FOUND",
+    );
+  }
+
+  // 2. Verify conversation status
+  if (conversation.status === CONVERSATION_STATUSES.ARCHIVED) {
+    throw new AppError(
+      "Archived conversations cannot accept new messages",
+      400,
+      "CONVERSATION_ARCHIVED",
+    );
+  }
+
+  if (conversation.status !== CONVERSATION_STATUSES.ACTIVE) {
+    throw new AppError(
+      "Conversation is not active",
+      400,
+      "CONVERSATION_NOT_ACTIVE",
+    );
+  }
+
+  // 3. Validate user message content
+  const trimmedContent = input.content?.trim();
+  if (!trimmedContent) {
+    throw new AppError(
+      "Message content is required",
+      400,
+      "INVALID_INPUT",
+    );
+  }
+
+  // 4. Deduct application credits atomically BEFORE invoking the AI provider
+  await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+
+  let userMessage:
+    | Awaited<ReturnType<typeof messageRepository.createMessage>>
+    | undefined;
+  let assistantMessage:
+    | Awaited<ReturnType<typeof messageRepository.createMessage>>
+    | undefined;
+
+  let fullAssistantContent = "";
+  let capturedModel: string | null = null;
+  let capturedUsage: AIUsage | null = null;
+
+  try {
+    // 5. Persist USER message
+    userMessage = await messageRepository.createMessage({
+      conversationId: conversation._id,
+      userId,
+      role: MESSAGE_ROLES.USER,
+      content: trimmedContent,
+      status: MESSAGE_STATUSES.COMPLETED,
+      model: null,
+      provider: null,
+      usage: null,
+    });
+
+    // Notify caller that stream has started with the created user message
+    callbacks.onStart?.({
+      userMessage: {
+        id: userMessage._id.toString(),
+        conversationId: userMessage.conversationId.toString(),
+        role: userMessage.role,
+        content: userMessage.content,
+        status: userMessage.status,
+        createdAt: userMessage.createdAt,
+      },
+      conversationId: conversation._id.toString(),
+    });
+
+    // 6. Build conversation context messages for AI provider via Context Builder
+    const aiMessages = await buildFullChatContext({
+      userId,
+      conversationId: conversation._id,
+      userQuery: trimmedContent,
+      maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
+      maxChars: env.AI_MAX_CONTEXT_CHARS,
+    });
+
+    // 7. Invoke AI Provider Streaming
+    if (typeof provider.generateChatStream !== "function") {
+      throw new AppError(
+        `Provider "${provider.name}" does not support streaming`,
+        500,
+        "STREAMING_NOT_SUPPORTED",
+      );
+    }
+
+    for await (const chunk of provider.generateChatStream(aiMessages, undefined, signal)) {
+      if (signal?.aborted) {
+        break;
+      }
+      if (chunk.content) {
+        fullAssistantContent += chunk.content;
+        callbacks.onChunk(chunk.content);
+      }
+      if (chunk.model) {
+        capturedModel = chunk.model;
+      }
+      if (chunk.usage) {
+        capturedUsage = chunk.usage;
+      }
+    }
+  } catch (executionError: unknown) {
+    // If the client aborted cleanly during reading and content was produced, handle below
+    if (signal?.aborted && fullAssistantContent.trim().length > 0) {
+      // Fall through to partial save
+    } else {
+      // Compensate / refund deducted credits
+      try {
+        await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+      } catch (refundError) {
+        console.error(
+          "Credit refund failed during AI chat stream failure compensation:",
+          refundError,
+        );
+      }
+
+      // Mark user message as FAILED to maintain consistency if it was created
+      if (userMessage?._id) {
+        try {
+          await messageRepository.updateMessageStatus(
+            userMessage._id,
+            MESSAGE_STATUSES.FAILED,
+          );
+        } catch (updateError) {
+          console.error(
+            "Failed to update user message status to FAILED:",
+            updateError,
+          );
+        }
+      }
+
+      if (executionError instanceof AppError) {
+        throw executionError;
+      }
+
+      throw new AppError(
+        "AI provider failed to generate response",
+        502,
+        "AI_PROVIDER_ERROR",
+      );
+    }
+  }
+
+  // Handle client cancellation / stop generating
+  if (signal?.aborted) {
+    if (!fullAssistantContent.trim()) {
+      // Aborted before ANY content was produced: refund credit & mark user message failed
+      try {
+        await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+      } catch {}
+      if (userMessage?._id) {
+        try {
+          await messageRepository.updateMessageStatus(
+            userMessage._id,
+            MESSAGE_STATUSES.FAILED,
+          );
+        } catch {}
+      }
+      return null;
+    }
+    // Partial content exists: keep deducted credit and persist partial assistant message
+  }
+
+  if (!userMessage) {
+    throw new AppError(
+      "Failed to initialize AI chat stream",
+      500,
+      "INTERNAL_ERROR",
+    );
+  }
+
+  // If not aborted, but fullAssistantContent is empty, treat as provider empty response
+  if (!signal?.aborted && !fullAssistantContent.trim()) {
+    try {
+      await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+    } catch {}
+    if (userMessage._id) {
+      try {
+        await messageRepository.updateMessageStatus(
+          userMessage._id,
+          MESSAGE_STATUSES.FAILED,
+        );
+      } catch {}
+    }
+    throw new AppError(
+      "AI provider returned an empty response",
+      502,
+      "AI_PROVIDER_ERROR",
+    );
+  }
+
+  const fallbackUsage: AIUsage = capturedUsage ?? {
+    inputTokens: Math.ceil(trimmedContent.length / 4),
+    outputTokens: Math.ceil(fullAssistantContent.length / 4),
+    totalTokens: Math.ceil((trimmedContent.length + fullAssistantContent.length) / 4),
+  };
+
+  // 8. Persist ASSISTANT message
+  assistantMessage = await messageRepository.createMessage({
+    conversationId: conversation._id,
+    userId,
+    role: MESSAGE_ROLES.ASSISTANT,
+    content: fullAssistantContent,
+    status: MESSAGE_STATUSES.COMPLETED,
+    model: capturedModel ?? (provider.name === "groq" ? "qwen/qwen3.8-27b" : "llama3.2:3b"),
+    provider: provider.name,
+    usage: fallbackUsage,
+  });
+
+  // 9. Update conversation metadata
+  let totalMessages = 0;
+  let updatedConversation:
+    | Awaited<ReturnType<typeof conversationRepository.updateConversation>>
+    | null = null;
+
+  try {
+    totalMessages =
+      await messageRepository.countMessagesByConversationId(
+        conversation._id,
+      );
+
+    updatedConversation =
+      await conversationRepository.updateConversation(
+        conversation._id,
+        userId,
+        {
+          lastMessageAt: assistantMessage.createdAt ?? new Date(),
+          messageCount: totalMessages,
+        },
+      );
+  } catch (metadataError) {
+    console.error(
+      "Non-fatal error updating conversation metadata after stream completion:",
+      metadataError,
+    );
+  }
+
+  // 9b. Non-critical automatic memory extraction (only if completed normally)
+  if (!signal?.aborted) {
+    try {
+      await memoryService.extractAndSaveMemories(
+        userId,
+        {
+          userMessageContent: userMessage.content,
+          assistantMessageContent: assistantMessage.content,
+        },
+        provider,
+      );
+    } catch (extractionError) {
+      console.error(
+        "Non-fatal error during automatic memory extraction:",
+        extractionError,
+      );
+    }
+  }
+
+  // 9c. Non-critical automatic conversation summarization (non-blocking)
+  if (!signal?.aborted) {
+    summarizeConversationIfNeeded(
+      conversation._id.toString(),
+      userId,
+      provider,
+    ).catch((summaryError) => {
+      console.error(
+        "Non-fatal error during conversation summarization:",
+        summaryError,
+      );
+    });
+  }
+
+  // 10. Return clean API response
+  return {
+    conversation: {
+      id: (updatedConversation?._id ?? conversation._id).toString(),
+      title: updatedConversation?.title ?? conversation.title,
+      status: updatedConversation?.status ?? conversation.status,
+      messageCount: updatedConversation?.messageCount ?? totalMessages,
       lastMessageAt:
         updatedConversation?.lastMessageAt ??
         assistantMessage.createdAt ??

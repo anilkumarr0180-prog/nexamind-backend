@@ -15,6 +15,7 @@ export const chatRequestSchema = z.object({
         .trim()
         .min(1, "Message content is required")
         .max(100000, "Message content cannot exceed 100,000 characters"),
+      stream: z.boolean().optional(),
     })
     .strict(),
 });
