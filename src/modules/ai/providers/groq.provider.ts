@@ -29,8 +29,24 @@ type GroqChatCompletionResponse = {
   };
 };
 
-const DEFAULT_RECOMMENDED_MODEL = "llama-3.3-70b-versatile";
-const HIGH_CAPACITY_FALLBACK_MODEL = "llama-3.1-8b-instant";
+const DEFAULT_RECOMMENDED_MODEL = "groq/compound-mini";
+const FALLBACK_MODEL = "qwen/qwen3.8-27b";
+
+function resolveValidModel(rawModel?: string): string {
+  if (!rawModel) return DEFAULT_RECOMMENDED_MODEL;
+  const m = rawModel.trim().toLowerCase();
+  // If requesting deprecated llama-3.x models that do not exist on Groq, upgrade to compound-mini
+  if (m.includes("llama-3") || m.includes("llama3")) {
+    return DEFAULT_RECOMMENDED_MODEL;
+  }
+  if (m.includes("compound")) {
+    return m.includes("mini") ? "groq/compound-mini" : "groq/compound";
+  }
+  if (m.includes("qwen")) {
+    return "qwen/qwen3.8-27b";
+  }
+  return rawModel.trim();
+}
 
 export class GroqProvider implements AIProvider {
   public readonly name = "groq";
@@ -42,11 +58,7 @@ export class GroqProvider implements AIProvider {
   constructor(apiKey?: string, defaultModel?: string, timeoutMs?: number) {
     this.apiKey = (apiKey ?? env.GROQ_API_KEY ?? "").trim();
     const rawModel = defaultModel ?? env.AI_MODEL;
-    // Automatically sanitize and upgrade low-quota preview models like qwen to high-quota llama models
-    this.defaultModel =
-      !rawModel || rawModel.includes("qwen")
-        ? DEFAULT_RECOMMENDED_MODEL
-        : rawModel;
+    this.defaultModel = resolveValidModel(rawModel);
     this.timeoutMs = timeoutMs ?? env.OLLAMA_TIMEOUT_MS;
     this.apiUrl = "https://api.groq.com/openai/v1/chat/completions";
   }
@@ -63,11 +75,9 @@ export class GroqProvider implements AIProvider {
       );
     }
 
-    let targetModel = options?.model ?? this.defaultModel;
-    if (targetModel.includes("qwen")) {
-      targetModel = DEFAULT_RECOMMENDED_MODEL;
-    }
-    const maxTokens = options?.maxTokens ?? 1024;
+    let targetModel = resolveValidModel(options?.model ?? this.defaultModel);
+    // Safe output token clamping to guarantee pre-flight limits are never tripped
+    const maxTokens = options?.maxTokens ?? (targetModel.includes("qwen") ? 600 : 800);
 
     try {
       const response = await fetch(this.apiUrl, {
@@ -93,14 +103,32 @@ export class GroqProvider implements AIProvider {
       if (!response.ok) {
         const errorMsg = data?.error?.message || `HTTP ${response.status}`;
 
-        // If rate limited (429) on primary model, seamlessly retry with high-capacity model
-        if (response.status === 429 && targetModel !== HIGH_CAPACITY_FALLBACK_MODEL) {
+        // 1. If model not found / deprecated (404 or "does not exist"), auto-heal with DEFAULT_RECOMMENDED_MODEL
+        if (
+          (response.status === 404 || errorMsg.toLowerCase().includes("does not exist")) &&
+          targetModel !== DEFAULT_RECOMMENDED_MODEL
+        ) {
           console.warn(
-            `[GroqProvider] Rate limit (429) on ${targetModel}. Seamlessly retrying with ${HIGH_CAPACITY_FALLBACK_MODEL}...`,
+            `[GroqProvider] Model "${targetModel}" does not exist on Groq. Auto-recovering with ${DEFAULT_RECOMMENDED_MODEL}...`,
           );
           return this.generateChatResponse(messages, {
-            model: HIGH_CAPACITY_FALLBACK_MODEL,
+            model: DEFAULT_RECOMMENDED_MODEL,
             maxTokens: 800,
+          });
+        }
+
+        // 2. If rate limited (429), seamlessly switch between compound-mini and qwen
+        if (response.status === 429) {
+          const alternateModel =
+            targetModel === DEFAULT_RECOMMENDED_MODEL ? FALLBACK_MODEL : DEFAULT_RECOMMENDED_MODEL;
+          const alternateTokens = alternateModel === FALLBACK_MODEL ? 500 : 800;
+
+          console.warn(
+            `[GroqProvider] Rate limit (429) on ${targetModel}. Seamlessly retrying with ${alternateModel}...`,
+          );
+          return this.generateChatResponse(messages, {
+            model: alternateModel,
+            maxTokens: alternateTokens,
           });
         }
 
@@ -111,13 +139,7 @@ export class GroqProvider implements AIProvider {
             "AI_PROVIDER_ERROR",
           );
         }
-        if (response.status === 429) {
-          throw new AppError(
-            `Groq rate limit reached: ${errorMsg}`,
-            429,
-            "AI_PROVIDER_RATE_LIMIT",
-          );
-        }
+
         throw new AppError(
           `Groq API error: ${errorMsg}`,
           502,
