@@ -69,6 +69,7 @@ export const handleChatStream = async (
           }
         },
         onChunk: (chunk) => {
+          if (!chunk) return;
           if (!headersSent && !res.headersSent) {
             res.setHeader("Content-Type", "text/event-stream");
             res.setHeader("Cache-Control", "no-cache, no-transform");

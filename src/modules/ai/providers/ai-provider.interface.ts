@@ -29,7 +29,7 @@ export type AIResponse = {
 };
 
 export interface AIStreamChunk {
-  content: string;
+  content?: string | undefined;
   model?: string | undefined;
   usage?: AIUsage | undefined;
   done?: boolean | undefined;
