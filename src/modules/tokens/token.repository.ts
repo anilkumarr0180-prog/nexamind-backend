@@ -1,4 +1,4 @@
-import type { Types } from "mongoose";
+import type { ClientSession, Types } from "mongoose";
 import { TokenBalance, type ITokenBalance } from "./token.model.js";
 
 export type CreateTokenBalanceData = {
@@ -8,8 +8,11 @@ export type CreateTokenBalanceData = {
 
 export const findTokenBalanceByUserId = async (
   userId: string | Types.ObjectId,
+  session?: ClientSession,
 ): Promise<ITokenBalance | null> => {
-  return TokenBalance.findOne({ userId }).exec();
+  return TokenBalance.findOne({ userId })
+    .session(session ?? null)
+    .exec();
 };
 
 export const createTokenBalance = async (
@@ -53,3 +56,41 @@ export const atomicAddBalance = async (
   ).exec();
 };
 
+export const atomicDeductBalanceWithSession = async (
+  userId: string | Types.ObjectId,
+  amount: number,
+  session: ClientSession,
+): Promise<ITokenBalance | null> => {
+  return TokenBalance.findOneAndUpdate(
+    {
+      userId,
+      balance: { $gte: amount },
+    },
+    {
+      $inc: { balance: -amount },
+    },
+    {
+      returnDocument: "after",
+      runValidators: true,
+      session,
+    },
+  ).exec();
+};
+
+export const atomicAddBalanceWithSession = async (
+  userId: string | Types.ObjectId,
+  amount: number,
+  session: ClientSession,
+): Promise<ITokenBalance | null> => {
+  return TokenBalance.findOneAndUpdate(
+    { userId },
+    {
+      $inc: { balance: amount },
+    },
+    {
+      returnDocument: "after",
+      runValidators: true,
+      session,
+    },
+  ).exec();
+};

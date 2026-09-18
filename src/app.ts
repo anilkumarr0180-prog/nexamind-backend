@@ -1,7 +1,9 @@
 import express from "express";
 import morgan from "morgan";
 import cors from "cors";
+
 import { env } from "./config/env.js";
+
 import userRoutes from "./modules/users/user.routes.js";
 import authRoutes from "./modules/auth/auth.routes.js";
 import conversationRoutes from "./modules/conversations/conversation.routes.js";
@@ -10,6 +12,9 @@ import tokenRoutes from "./modules/tokens/token.routes.js";
 import aiRoutes from "./modules/ai/ai.routes.js";
 import memoryRoutes from "./modules/memory/memory.routes.js";
 import agentRoutes from "./modules/agent/agent.routes.js";
+import planRoutes from "./modules/plans/plan.routes.js";
+import subscriptionRoutes from "./modules/subscriptions/subscription.routes.js";
+
 import { errorHandler } from "./middleware/error-handler.js";
 
 const app = express();
@@ -17,6 +22,7 @@ const app = express();
 app.set("trust proxy", 1);
 
 app.use(morgan("dev"));
+
 // Enable CORS with explicit allowlist from environment
 app.use(
   cors({
@@ -24,9 +30,8 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
-
 
 app.use(express.json());
 
@@ -45,6 +50,8 @@ app.use("/api/v1/tokens", tokenRoutes);
 app.use("/api/v1/ai", aiRoutes);
 app.use("/api/v1/memories", memoryRoutes);
 app.use("/api/v1/agent", agentRoutes);
+app.use("/api/v1/plans", planRoutes);
+app.use("/api/v1/subscriptions", subscriptionRoutes);
 
 app.use(errorHandler);
 
