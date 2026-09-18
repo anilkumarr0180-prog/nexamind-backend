@@ -10,6 +10,8 @@ import * as authService from "../src/modules/auth/auth.service.js";
 import * as conversationService from "../src/modules/conversations/conversation.service.js";
 import * as tokenService from "../src/modules/tokens/token.service.js";
 import * as orchestratorService from "../src/modules/ai/orchestrator.service.js";
+import * as memoryService from "../src/modules/memory/memory.service.js";
+import { TestMockEmbeddingProvider } from "./helpers/mock-embedding.helper.js";
 import {
   AgentService,
   setAgentService,
@@ -112,6 +114,9 @@ const runTests = async () => {
   const mockProvider = new MockAgentContextAIProvider();
   orchestratorService.setDefaultProvider(mockProvider);
 
+  const mockEmbeddingProvider = new TestMockEmbeddingProvider();
+  memoryService.setDefaultEmbeddingProvider(mockEmbeddingProvider);
+
   const registry = new ToolRegistry();
   registry.register(calculatorTool);
   const testAgentService = new AgentService({
@@ -183,11 +188,13 @@ const runTests = async () => {
     });
 
     // Setup User A Long-term Memory
+    const eurEmb = await mockEmbeddingProvider.generateEmbedding("User prefers currency in EUR and strict 2-decimal formatting");
     await Memory.create({
       userId: userAId,
       type: MEMORY_TYPES.PREFERENCE,
       content: "User prefers currency in EUR and strict 2-decimal formatting",
       status: MEMORY_STATUSES.ACTIVE,
+      embedding: eurEmb,
     });
 
     // -------------------------------------------------------------

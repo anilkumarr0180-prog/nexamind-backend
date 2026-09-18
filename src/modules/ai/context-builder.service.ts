@@ -1,79 +1,13 @@
 import type { Types } from "mongoose";
 import { env } from "../../config/env.js";
 import { MESSAGE_ROLES } from "../messages/message.model.js";
-import { Message } from "../messages/message.model.js";
 import * as messageRepository from "../messages/message.repository.js";
 import * as conversationRepository from "../conversations/conversation.repository.js";
 import * as memoryService from "../memory/memory.service.js";
 import type { AIMessage } from "./providers/ai-provider.interface.js";
+export { NEXAMIND_CHAT_SYSTEM_PROMPT } from "./prompts/system.prompt.js";
 
 export const DEFAULT_RECENT_MESSAGES_WITH_SUMMARY = 6;
-
-export const getCrossConversationHistoryContext = async (
-  userId: string | Types.ObjectId,
-  excludeConversationId?: string | Types.ObjectId,
-  maxConversations: number = 2,
-  maxTotalChars: number = 350,
-): Promise<string | null> => {
-  try {
-    const otherConversations =
-      await conversationRepository.findRecentOtherConversationsForUser(
-        userId,
-        excludeConversationId,
-        maxConversations,
-      );
-
-    if (!otherConversations || otherConversations.length === 0) {
-      return null;
-    }
-
-    const lines: string[] = [];
-    let currentChars = 0;
-
-    for (const conv of otherConversations) {
-      const title = conv.title?.trim() || "Untitled conversation";
-
-      // Fetch the last completed message in this other conversation
-      const lastMsg = await Message.findOne({
-        conversationId: conv._id,
-        status: "COMPLETED",
-      })
-        .sort({ createdAt: -1 })
-        .lean();
-
-      let line = `- "${title}"`;
-      if (lastMsg && lastMsg.content) {
-        // Sanitize and truncate content excerpt (max 120 chars)
-        const cleanContent = lastMsg.content
-          .replace(/\s+/g, " ")
-          .slice(0, 120)
-          .trim();
-        if (cleanContent) {
-          line += `: Last message: "${cleanContent}"`;
-        }
-      }
-
-      if (currentChars + line.length > maxTotalChars && lines.length > 0) {
-        break;
-      }
-
-      lines.push(line);
-      currentChars += line.length;
-    }
-
-    if (lines.length === 0) {
-      return null;
-    }
-
-    return `Recent conversation history:\n${lines.join("\n")}`;
-  } catch (err) {
-    console.warn(
-      "Non-fatal error retrieving cross-conversation context, proceeding without it:",
-      err,
-    );
-    return null;
-  }
-};
 
 export interface BuildFullChatContextOptions {
   userId: string | Types.ObjectId;
@@ -92,7 +26,7 @@ export const buildFullChatContext = async (
   const recentLimitWithSummary =
     options.recentMessagesWithSummary ?? DEFAULT_RECENT_MESSAGES_WITH_SUMMARY;
 
-  // 1. Fetch active conversation to check for persisted summary
+  // 1. Fetch active conversation to check for persisted summary (scoped to conversationId + userId)
   let conversationSummary: string | null = null;
   try {
     const activeConv =
@@ -117,7 +51,7 @@ export const buildFullChatContext = async (
     ? Math.min(maxMessages, recentLimitWithSummary)
     : maxMessages;
 
-  // 2. Fetch active conversation recent completed messages
+  // 2. Fetch active conversation recent completed messages (scoped strictly to conversationId)
   const recentMessages = await messageRepository.findRecentMessagesForContext(
     options.conversationId,
     effectiveMaxMessages,
@@ -142,12 +76,15 @@ export const buildFullChatContext = async (
     return [];
   }
 
-  // 3. Fetch semantic memory context (fail-open)
+  // 3. Fetch semantic memory context scoped strictly to authenticated user (fail-open)
+  const effectiveQuery =
+    options.userQuery ?? (latestMessage.role === "user" ? latestMessage.content : null);
+
   let memoryContext: string | null = null;
   try {
     memoryContext = await memoryService.getSemanticMemoryContextForUser(
       options.userId.toString(),
-      options.userQuery,
+      effectiveQuery,
       env.AI_MAX_MEMORY_CONTEXT,
     );
   } catch (memErr) {
@@ -158,23 +95,8 @@ export const buildFullChatContext = async (
     memoryContext = null;
   }
 
-  // 4. Fetch cross-conversation history context (fail-open)
-  let crossConversationContext: string | null = null;
-  try {
-    crossConversationContext = await getCrossConversationHistoryContext(
-      options.userId,
-      options.conversationId,
-    );
-  } catch (convErr) {
-    console.warn(
-      "Non-fatal error retrieving cross-conversation context:",
-      convErr,
-    );
-    crossConversationContext = null;
-  }
-
-  // 5. Combine metadata sections deterministically:
-  // Order: Relevant user memories -> Conversation summary -> Recent conversation history
+  // 4. Combine metadata sections deterministically:
+  // Order: Relevant user memories -> Conversation summary
   const contextSections: string[] = [];
   if (memoryContext && memoryContext.trim()) {
     contextSections.push(memoryContext.trim());
@@ -182,13 +104,10 @@ export const buildFullChatContext = async (
   if (conversationSummary && conversationSummary.trim()) {
     contextSections.push(`Conversation summary:\n${conversationSummary.trim()}`);
   }
-  if (crossConversationContext && crossConversationContext.trim()) {
-    contextSections.push(crossConversationContext.trim());
-  }
   const combinedMetadata =
     contextSections.length > 0 ? contextSections.join("\n\n") : null;
 
-  // 6. Inject into latest user message and apply character budgeting
+  // 5. Inject into latest user message and apply character budgeting
   const rawLatestContent = combinedMetadata
     ? `${combinedMetadata}\n\n${latestMessage.content}`
     : latestMessage.content;

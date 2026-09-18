@@ -1,5 +1,6 @@
 import { AppError } from "../../../errors/app.error.js";
 import { env } from "../../../config/env.js";
+import { NEXAMIND_CHAT_SYSTEM_PROMPT } from "../prompts/system.prompt.js";
 import type {
   AIProvider,
   AIMessage,
@@ -113,6 +114,13 @@ export class GroqProvider implements AIProvider {
 
       return msgObj;
     });
+
+    if (!messages.some((m) => m.role === "system")) {
+      sanitizedMessages.unshift({
+        role: "system",
+        content: NEXAMIND_CHAT_SYSTEM_PROMPT,
+      });
+    }
 
     const requestBody: Record<string, unknown> = {
       model: targetModel,
@@ -323,6 +331,13 @@ export class GroqProvider implements AIProvider {
 
       return msgObj;
     });
+
+    if (!messages.some((m) => m.role === "system")) {
+      sanitizedMessages.unshift({
+        role: "system",
+        content: NEXAMIND_CHAT_SYSTEM_PROMPT,
+      });
+    }
 
     const requestBody: Record<string, unknown> = {
       model: targetModel,

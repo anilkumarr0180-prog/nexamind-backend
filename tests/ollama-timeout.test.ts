@@ -31,10 +31,16 @@ const runTests = async () => {
       });
       req.on("end", () => {
         const parsed = JSON.parse(body || "{}");
-        if (parsed.messages?.[0]?.content?.includes("simulate_hang")) {
+        const hasHang = parsed.messages?.some(
+          (m: any) => typeof m?.content === "string" && m.content.includes("simulate_hang"),
+        );
+        const hasError = parsed.messages?.some(
+          (m: any) => typeof m?.content === "string" && m.content.includes("simulate_error"),
+        );
+        if (hasHang) {
           // Keep connection open indefinitely without responding to simulate timeout
           hangingConnections.push(res);
-        } else if (parsed.messages?.[0]?.content?.includes("simulate_error")) {
+        } else if (hasError) {
           res.statusCode = 500;
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify({ error: "Internal Ollama Crash" }));

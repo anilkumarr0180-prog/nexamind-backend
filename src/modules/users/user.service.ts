@@ -37,6 +37,7 @@ export const getUserByEmail = async (email: string) => {
 export const registerUser = async (data: {
   email: string;
   passwordHash: string;
+  name?: string | null;
 }) => {
   const existingUser = await userRepository.findUserByEmail(data.email);
 

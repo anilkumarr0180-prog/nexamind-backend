@@ -20,6 +20,7 @@ export const findUserByEmail = async (
 export const createUser = async (data: {
   email: string;
   passwordHash: string;
+  name?: string | null;
 }) => {
   return User.create(data);
 };

@@ -13,6 +13,13 @@ export const USER_ROLES = {
 
 const userSchema = new Schema(
   {
+    name: {
+      type: String,
+      trim: true,
+      default: null,
+      maxlength: 100,
+    },
+
     email: {
       type: String,
       required: true,

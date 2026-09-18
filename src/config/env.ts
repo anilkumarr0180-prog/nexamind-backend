@@ -122,6 +122,20 @@ const envSchema = z.object({
     .default("true")
     .transform((val) => val === "true"),
 
+  AI_MEMORY_MIN_SCORE: z
+    .coerce
+    .number()
+    .min(0)
+    .max(1)
+    .default(0.65),
+
+  AI_MEMORY_TEXT_MIN_SCORE: z
+    .coerce
+    .number()
+    .min(0)
+    .max(1)
+    .default(0.25),
+
   AUTH_RATE_LIMIT_WINDOW_MS: z
     .coerce
     .number()

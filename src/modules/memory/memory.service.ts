@@ -204,9 +204,12 @@ export const extractAndSaveMemories = async (
         defaultEmbeddingProvider instanceof OllamaEmbeddingProvider ||
         defaultEmbeddingProvider.name === "ollama-embedding";
 
+      const isProduction = env.NODE_ENV === "production";
+
       if (
         env.AI_MEMORY_SEMANTIC_SEARCH_ENABLED &&
-        !(env.AI_PROVIDER === "groq" && isLocalOllamaProvider)
+        !(env.AI_PROVIDER === "groq" && isLocalOllamaProvider) &&
+        !(isProduction && isLocalOllamaProvider)
       ) {
         try {
           embedding = await defaultEmbeddingProvider.generateEmbedding(trimmedContent);
@@ -267,6 +270,9 @@ export const getActiveMemoryContextForUser = async (
   return `Relevant user memories:\n${memoryLines.join("\n")}`;
 };
 
+export const DEFAULT_MEMORY_SIMILARITY_THRESHOLD = 0.65;
+export const DEFAULT_MEMORY_TEXT_RELEVANCE_THRESHOLD = 0.25;
+
 export const getSemanticMemoryContextForUser = async (
   userId: string,
   query?: string | null,
@@ -274,46 +280,76 @@ export const getSemanticMemoryContextForUser = async (
 ): Promise<string | null> => {
   const boundedLimit = Math.max(1, limit);
 
+  if (!env.AI_MEMORY_SEMANTIC_SEARCH_ENABLED || !query || !query.trim()) {
+    return null;
+  }
+
+  const trimmedQuery = query.trim();
+
+  // 1. Try vector/semantic retrieval first when embeddings and provider are available
   const isLocalOllamaProvider =
     defaultEmbeddingProvider instanceof OllamaEmbeddingProvider ||
     defaultEmbeddingProvider.name === "ollama-embedding";
+  const isProduction = env.NODE_ENV === "production";
+  const shouldSkipVectorSearch =
+    (env.AI_PROVIDER === "groq" && isLocalOllamaProvider) ||
+    (isProduction && isLocalOllamaProvider);
 
-  if (
-    !env.AI_MEMORY_SEMANTIC_SEARCH_ENABLED ||
-    !query ||
-    !query.trim() ||
-    (env.AI_PROVIDER === "groq" && isLocalOllamaProvider)
-  ) {
-    return getActiveMemoryContextForUser(userId, boundedLimit);
+  if (!shouldSkipVectorSearch) {
+    try {
+      const queryVector = await defaultEmbeddingProvider.generateEmbedding(
+        trimmedQuery,
+      );
+
+      const minScore =
+        env.AI_MEMORY_MIN_SCORE ?? DEFAULT_MEMORY_SIMILARITY_THRESHOLD;
+
+      const results = await memoryRepository.searchActiveMemoriesByVector(
+        userId,
+        queryVector,
+        { limit: boundedLimit, minScore },
+      );
+
+      if (results.length > 0) {
+        const memoryLines = results.map(
+          (mem) => `- [${mem.type}] ${mem.content.trim()}`,
+        );
+        return `Relevant user memories:\n${memoryLines.join("\n")}\n(Note: The above memories are persistent user facts from past sessions; do not claim they were mentioned in this conversation unless discussed in the current dialogue.)`;
+      }
+    } catch (vectorErr) {
+      console.warn(
+        "Non-fatal error during vector memory retrieval, falling back to deterministic text relevance:",
+        vectorErr,
+      );
+    }
   }
 
+  // 2. Deterministic text-relevance fallback (for empty/missing embeddings or offline embedding provider)
   try {
-    const queryVector = await defaultEmbeddingProvider.generateEmbedding(
-      query.trim(),
-    );
+    const textMinScore =
+      env.AI_MEMORY_TEXT_MIN_SCORE ?? DEFAULT_MEMORY_TEXT_RELEVANCE_THRESHOLD;
 
-    const results = await memoryRepository.searchActiveMemoriesByVector(
-      userId,
-      queryVector,
-      { limit: boundedLimit },
-    );
+    const textResults =
+      await memoryRepository.searchActiveMemoriesByTextRelevance(
+        userId,
+        trimmedQuery,
+        { limit: boundedLimit, minScore: textMinScore },
+      );
 
-    if (results.length > 0) {
-      const memoryLines = results.map(
+    if (textResults.length > 0) {
+      const memoryLines = textResults.map(
         (mem) => `- [${mem.type}] ${mem.content.trim()}`,
       );
-      return `Relevant user memories:\n${memoryLines.join("\n")}`;
+      return `Relevant user memories:\n${memoryLines.join("\n")}\n(Note: The above memories are persistent user facts from past sessions; do not claim they were mentioned in this conversation unless discussed in the current dialogue.)`;
     }
-
-    // Fall back gracefully to recency if semantic results are empty (e.g. legacy memories)
-    return getActiveMemoryContextForUser(userId, boundedLimit);
-  } catch (error) {
+  } catch (textError) {
     console.warn(
-      "Non-fatal error during semantic memory retrieval, falling back to recency:",
-      error,
+      "Non-fatal error during text-relevance memory retrieval:",
+      textError,
     );
-    return getActiveMemoryContextForUser(userId, boundedLimit);
   }
+
+  return null;
 };
 
 export const createMemory = async (
@@ -342,9 +378,12 @@ export const createMemory = async (
     defaultEmbeddingProvider instanceof OllamaEmbeddingProvider ||
     defaultEmbeddingProvider.name === "ollama-embedding";
 
+  const isProduction = env.NODE_ENV === "production";
+
   if (
     env.AI_MEMORY_SEMANTIC_SEARCH_ENABLED &&
-    !(env.AI_PROVIDER === "groq" && isLocalOllamaProvider)
+    !(env.AI_PROVIDER === "groq" && isLocalOllamaProvider) &&
+    !(isProduction && isLocalOllamaProvider)
   ) {
     try {
       embedding = await defaultEmbeddingProvider.generateEmbedding(trimmedContent);
