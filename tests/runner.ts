@@ -107,9 +107,9 @@ const TEST_SUITES: TestSuite[] = [
     file: "memory-wording-relevance.test.ts",
   },
   {
-    id: "memory-text-fallback",
-    name: "M7: Memory Text-Relevance Fallback & Isolation",
-    file: "memory-text-fallback.test.ts",
+    id: "streaming-regression",
+    name: "AI Streaming: Regression & Lifecycle Semantics",
+    file: "streaming-regression.test.ts",
   },
   {
     id: "agent-tool-executor",
