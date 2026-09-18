@@ -460,6 +460,7 @@ export const processChatStream = async (
   let fullAssistantContent = "";
   let capturedModel: string | null = null;
   let capturedUsage: AIUsage | null = null;
+  let streamError: unknown = null;
 
   try {
     // 5. Persist USER message
@@ -509,7 +510,7 @@ export const processChatStream = async (
       if (signal?.aborted) {
         break;
       }
-      if (chunk.content) {
+      if (typeof chunk.content === "string" && chunk.content.length > 0) {
         fullAssistantContent += chunk.content;
         callbacks.onChunk(chunk.content);
       }
@@ -521,54 +522,20 @@ export const processChatStream = async (
       }
     }
   } catch (executionError: unknown) {
-    // If the client aborted cleanly during reading and content was produced, handle below
-    if (signal?.aborted && fullAssistantContent.trim().length > 0) {
-      // Fall through to partial save
-    } else {
-      // Compensate / refund deducted credits
-      try {
-        await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
-      } catch (refundError) {
-        console.error(
-          "Credit refund failed during AI chat stream failure compensation:",
-          refundError,
-        );
-      }
-
-      // Mark user message as FAILED to maintain consistency if it was created
-      if (userMessage?._id) {
-        try {
-          await messageRepository.updateMessageStatus(
-            userMessage._id,
-            MESSAGE_STATUSES.FAILED,
-          );
-        } catch (updateError) {
-          console.error(
-            "Failed to update user message status to FAILED:",
-            updateError,
-          );
-        }
-      }
-
-      if (executionError instanceof AppError) {
-        throw executionError;
-      }
-
-      throw new AppError(
-        "AI provider failed to generate response",
-        502,
-        "AI_PROVIDER_ERROR",
-      );
-    }
+    streamError = executionError;
   }
 
-  // Handle client cancellation / stop generating
+  const hasMeaningfulContent = fullAssistantContent.trim().length > 0;
+
+  // 1. CLIENT ABORT (Stop Generating / Premature Client Disconnect)
   if (signal?.aborted) {
-    if (!fullAssistantContent.trim()) {
+    if (!hasMeaningfulContent) {
       // Aborted before ANY content was produced: refund credit & mark user message failed
       try {
         await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
-      } catch {}
+      } catch (refundError) {
+        console.error("Credit refund failed on client abort before content:", refundError);
+      }
       if (userMessage?._id) {
         try {
           await messageRepository.updateMessageStatus(
@@ -579,23 +546,49 @@ export const processChatStream = async (
       }
       return null;
     }
-    // Partial content exists: keep deducted credit and persist partial assistant message
+    // Partial content exists: keep deducted credit and persist partial assistant message below
   }
 
-  if (!userMessage) {
+  // 2. PROVIDER FAILURE with ZERO CONTENT
+  if (streamError && !hasMeaningfulContent) {
+    try {
+      await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+    } catch (refundError) {
+      console.error(
+        "Credit refund failed during AI chat stream failure compensation:",
+        refundError,
+      );
+    }
+    if (userMessage?._id) {
+      try {
+        await messageRepository.updateMessageStatus(
+          userMessage._id,
+          MESSAGE_STATUSES.FAILED,
+        );
+      } catch (updateError) {
+        console.error(
+          "Failed to update user message status to FAILED:",
+          updateError,
+        );
+      }
+    }
+
+    if (streamError instanceof AppError) {
+      throw streamError;
+    }
     throw new AppError(
-      "Failed to initialize AI chat stream",
-      500,
-      "INTERNAL_ERROR",
+      streamError instanceof Error ? streamError.message : "AI provider failed to generate response",
+      502,
+      "AI_PROVIDER_ERROR",
     );
   }
 
-  // If not aborted, but fullAssistantContent is empty, treat as provider empty response
-  if (!signal?.aborted && !fullAssistantContent.trim()) {
+  // 3. ZERO-CONTENT RESPONSE (Stream finished normally with zero content)
+  if (!signal?.aborted && !hasMeaningfulContent) {
     try {
       await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
     } catch {}
-    if (userMessage._id) {
+    if (userMessage?._id) {
       try {
         await messageRepository.updateMessageStatus(
           userMessage._id,
@@ -610,13 +603,22 @@ export const processChatStream = async (
     );
   }
 
+  if (!userMessage) {
+    throw new AppError(
+      "Failed to initialize AI chat stream",
+      500,
+      "INTERNAL_ERROR",
+    );
+  }
+
+  // At this point, hasMeaningfulContent is true
   const fallbackUsage: AIUsage = capturedUsage ?? {
     inputTokens: Math.ceil(trimmedContent.length / 4),
     outputTokens: Math.ceil(fullAssistantContent.length / 4),
     totalTokens: Math.ceil((trimmedContent.length + fullAssistantContent.length) / 4),
   };
 
-  // 8. Persist ASSISTANT message
+  // 8. Persist ASSISTANT message (normal completion, partial response, or abort with content)
   assistantMessage = await messageRepository.createMessage({
     conversationId: conversation._id,
     userId,
@@ -656,7 +658,22 @@ export const processChatStream = async (
     );
   }
 
-  // 9b. Non-critical automatic memory extraction (only if completed normally)
+  // 4. PARTIAL RESPONSE with PROVIDER FAILURE:
+  // If provider failed AFTER meaningful content was produced, partial response is preserved in DB,
+  // credit is kept, and the genuine provider error is re-thrown (do NOT hide provider error).
+  if (streamError) {
+    if (streamError instanceof AppError) {
+      throw streamError;
+    }
+    throw new AppError(
+      streamError instanceof Error ? streamError.message : "AI provider failed to generate response",
+      502,
+      "AI_PROVIDER_ERROR",
+    );
+  }
+
+  // 5. SUCCESSFUL COMPLETION (no stream error, not aborted)
+  // 9b. Non-critical automatic memory extraction
   if (!signal?.aborted) {
     try {
       await memoryService.extractAndSaveMemories(

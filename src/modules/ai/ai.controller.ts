@@ -41,14 +41,30 @@ export const handleChatStream = async (
   }
 
   const abortController = new AbortController();
+  let isStreamCompleted = false;
 
-  req.on("close", () => {
-    if (!res.writableEnded) {
+  const handleDisconnect = () => {
+    // Only abort if the connection closed prematurely before the stream completed
+    if (!isStreamCompleted && !res.writableEnded && !res.writableFinished) {
       abortController.abort();
     }
-  });
+  };
+
+  // Listen to response close to detect actual client disconnection (not req body close)
+  res.on("close", handleDisconnect);
 
   let headersSent = false;
+
+  const ensureHeaders = () => {
+    if (!headersSent && !res.headersSent) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+      headersSent = true;
+    }
+  };
 
   try {
     const result = await orchestratorService.processChatStream(
@@ -56,28 +72,14 @@ export const handleChatStream = async (
       req.body,
       {
         onStart: (startData) => {
-          if (!headersSent && !res.headersSent) {
-            res.setHeader("Content-Type", "text/event-stream");
-            res.setHeader("Cache-Control", "no-cache, no-transform");
-            res.setHeader("Connection", "keep-alive");
-            res.setHeader("X-Accel-Buffering", "no");
-            res.flushHeaders?.();
-            headersSent = true;
-          }
+          ensureHeaders();
           if (!res.writableEnded) {
             res.write(`data: ${JSON.stringify({ type: "start", ...startData })}\n\n`);
           }
         },
         onChunk: (chunk) => {
           if (!chunk) return;
-          if (!headersSent && !res.headersSent) {
-            res.setHeader("Content-Type", "text/event-stream");
-            res.setHeader("Cache-Control", "no-cache, no-transform");
-            res.setHeader("Connection", "keep-alive");
-            res.setHeader("X-Accel-Buffering", "no");
-            res.flushHeaders?.();
-            headersSent = true;
-          }
+          ensureHeaders();
           if (!res.writableEnded) {
             res.write(`data: ${JSON.stringify({ type: "chunk", content: chunk })}\n\n`);
           }
@@ -86,15 +88,10 @@ export const handleChatStream = async (
       abortController.signal,
     );
 
+    isStreamCompleted = true;
+
     if (!res.writableEnded) {
-      if (!headersSent && !res.headersSent) {
-        res.setHeader("Content-Type", "text/event-stream");
-        res.setHeader("Cache-Control", "no-cache, no-transform");
-        res.setHeader("Connection", "keep-alive");
-        res.setHeader("X-Accel-Buffering", "no");
-        res.flushHeaders?.();
-        headersSent = true;
-      }
+      ensureHeaders();
       if (result) {
         res.write(`data: ${JSON.stringify({ type: "done", ...result })}\n\n`);
       } else {
@@ -103,6 +100,7 @@ export const handleChatStream = async (
       res.end();
     }
   } catch (error: unknown) {
+    isStreamCompleted = true;
     if (res.headersSent || headersSent) {
       if (!res.writableEnded) {
         const statusCode = error instanceof AppError ? error.statusCode : 502;
@@ -120,5 +118,8 @@ export const handleChatStream = async (
     } else {
       throw error;
     }
+  } finally {
+    isStreamCompleted = true;
+    res.removeListener("close", handleDisconnect);
   }
 };
