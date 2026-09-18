@@ -59,6 +59,51 @@ function resolveValidModel(rawModel?: string): string {
   return rawModel.trim();
 }
 
+function trimMessagesToBudget(
+  messages: Array<Record<string, unknown>>,
+  maxBudget: number = env.AI_MAX_CONTEXT_CHARS,
+  maxCount: number = env.AI_MAX_CONTEXT_MESSAGES,
+): Array<Record<string, unknown>> {
+  if (messages.length === 0) return [];
+
+  let result = [...messages];
+  const hasSystem = result[0]?.role === "system";
+
+  // 1. Enforce max message count if exceeded, preserving system prompt (if present) and latest messages
+  if (result.length > maxCount) {
+    if (hasSystem) {
+      const systemMsg = result[0]!;
+      const recentHistory = result.slice(result.length - (maxCount - 1));
+      result = [systemMsg, ...recentHistory];
+    } else {
+      result = result.slice(result.length - maxCount);
+    }
+  }
+
+  // 2. Enforce character/serialized size budget
+  let serializedLength = JSON.stringify(result).length;
+
+  // If over budget, drop oldest history messages first
+  while (serializedLength > maxBudget && result.length > (hasSystem ? 2 : 1)) {
+    const removeIdx = hasSystem ? 1 : 0;
+    result.splice(removeIdx, 1);
+    serializedLength = JSON.stringify(result).length;
+  }
+
+  // 3. If still over budget, clamp the content of the latest message
+  if (serializedLength > maxBudget && result.length > 0) {
+    const lastMsg = result[result.length - 1]!;
+    if (typeof lastMsg.content === "string") {
+      const excess = serializedLength - maxBudget;
+      const newLen = Math.max(0, lastMsg.content.length - excess);
+      lastMsg.content = lastMsg.content.slice(0, newLen);
+    }
+  }
+
+  return result;
+}
+
+
 export class GroqProvider implements AIProvider {
   public readonly name = "groq";
   private readonly apiKey: string;
@@ -122,9 +167,11 @@ export class GroqProvider implements AIProvider {
       });
     }
 
+    const budgetedMessages = trimMessagesToBudget(sanitizedMessages);
+
     const requestBody: Record<string, unknown> = {
       model: targetModel,
-      messages: sanitizedMessages,
+      messages: budgetedMessages,
       max_tokens: maxTokens,
       stream: false,
     };
@@ -171,8 +218,22 @@ export class GroqProvider implements AIProvider {
           });
         }
 
-        // 2. Rate limit (429) OR Entity Too Large (413): seamless fallback retry
-        if (response.status === 429 || response.status === 413 || errorMsg.toLowerCase().includes("too large")) {
+        // 2. Request Entity Too Large (413): do NOT retry, throw clear AppError immediately
+        const is413 =
+          response.status === 413 ||
+          errorMsg.toLowerCase().includes("too large") ||
+          errorMsg.toLowerCase().includes("entity too large");
+
+        if (is413) {
+          throw new AppError(
+            "AI request is too large. Please start a new conversation or shorten the context.",
+            413,
+            "REQUEST_TOO_LARGE",
+          );
+        }
+
+        // 3. Rate limit (429): seamless fallback retry
+        if (response.status === 429) {
           const alternateModel =
             targetModel === DEFAULT_RECOMMENDED_MODEL ? FALLBACK_MODEL : DEFAULT_RECOMMENDED_MODEL;
 
@@ -339,9 +400,11 @@ export class GroqProvider implements AIProvider {
       });
     }
 
+    const budgetedMessages = trimMessagesToBudget(sanitizedMessages);
+
     const requestBody: Record<string, unknown> = {
       model: targetModel,
-      messages: sanitizedMessages,
+      messages: budgetedMessages,
       max_tokens: maxTokens,
       stream: true,
       stream_options: { include_usage: true },
@@ -425,7 +488,20 @@ export class GroqProvider implements AIProvider {
         return;
       }
 
-      if (response.status === 429 || response.status === 413 || errorMsg.toLowerCase().includes("too large")) {
+      const is413 =
+        response.status === 413 ||
+        errorMsg.toLowerCase().includes("too large") ||
+        errorMsg.toLowerCase().includes("entity too large");
+
+      if (is413) {
+        throw new AppError(
+          "AI request is too large. Please start a new conversation or shorten the context.",
+          413,
+          "REQUEST_TOO_LARGE",
+        );
+      }
+
+      if (response.status === 429) {
         const alternateModel =
           targetModel === DEFAULT_RECOMMENDED_MODEL ? FALLBACK_MODEL : DEFAULT_RECOMMENDED_MODEL;
 
@@ -494,6 +570,17 @@ export class GroqProvider implements AIProvider {
               const parsed = JSON.parse(dataStr);
               if (parsed.error) {
                 const errorMsg = parsed.error.message || "Groq API stream error";
+                const isStream413 =
+                  parsed.error.code === 413 ||
+                  errorMsg.toLowerCase().includes("too large") ||
+                  errorMsg.toLowerCase().includes("entity too large");
+                if (isStream413) {
+                  throw new AppError(
+                    "AI request is too large. Please start a new conversation or shorten the context.",
+                    413,
+                    "REQUEST_TOO_LARGE",
+                  );
+                }
                 throw new AppError(errorMsg, 502, "AI_PROVIDER_ERROR");
               }
 
@@ -544,6 +631,17 @@ export class GroqProvider implements AIProvider {
               const parsed = JSON.parse(dataStr);
               if (parsed.error) {
                 const errorMsg = parsed.error.message || "Groq API stream error";
+                const isStream413 =
+                  parsed.error.code === 413 ||
+                  errorMsg.toLowerCase().includes("too large") ||
+                  errorMsg.toLowerCase().includes("entity too large");
+                if (isStream413) {
+                  throw new AppError(
+                    "AI request is too large. Please start a new conversation or shorten the context.",
+                    413,
+                    "REQUEST_TOO_LARGE",
+                  );
+                }
                 throw new AppError(errorMsg, 502, "AI_PROVIDER_ERROR");
               }
 
