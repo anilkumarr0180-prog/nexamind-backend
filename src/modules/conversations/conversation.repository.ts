@@ -126,26 +126,6 @@ export const softDeleteConversation = async (
   );
 };
 
-export const findRecentOtherConversationsForUser = async (
-  userId: string | Types.ObjectId,
-  excludeConversationId?: string | Types.ObjectId,
-  limit: number = 2,
-) => {
-  const query: Record<string, unknown> = {
-    userId,
-    deletedAt: null,
-    messageCount: { $gt: 0 },
-  };
-
-  if (excludeConversationId) {
-    query._id = { $ne: excludeConversationId };
-  }
-
-  return Conversation.find(query)
-    .sort({ updatedAt: -1, _id: -1 })
-    .limit(limit)
-    .lean();
-};
 
 export const updateConversationSummary = async (
   conversationId: string | Types.ObjectId,

@@ -14,6 +14,7 @@ import * as tokenService from "../src/modules/tokens/token.service.js";
 import * as memoryService from "../src/modules/memory/memory.service.js";
 import * as memoryRepository from "../src/modules/memory/memory.repository.js";
 import * as orchestratorService from "../src/modules/ai/orchestrator.service.js";
+import { TestMockEmbeddingProvider } from "./helpers/mock-embedding.helper.js";
 import type {
   AIProvider,
   AIMessage,
@@ -66,6 +67,9 @@ const runTests = async () => {
   const mockProvider = new MemoryContextMockProvider();
   orchestratorService.setDefaultProvider(mockProvider);
 
+  const mockEmbeddingProvider = new TestMockEmbeddingProvider();
+  memoryService.setDefaultEmbeddingProvider(mockEmbeddingProvider);
+
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();
@@ -113,12 +117,16 @@ const runTests = async () => {
     // Test 1: User with active memories receives formatted memory context
     // -------------------------------------------------------------
     console.log("\n[Test 1] Testing user with active memories receives formatted context...");
+    const emb1 = await mockEmbeddingProvider.generateEmbedding("User prefers dark mode and TypeScript");
+    const emb2 = await mockEmbeddingProvider.generateEmbedding("Prefers concise technical answers");
+
     const mem1 = await Memory.create({
       userId: userAId,
       type: MEMORY_TYPES.FACT,
       content: "User prefers dark mode and TypeScript",
       status: MEMORY_STATUSES.ACTIVE,
       createdAt: new Date("2026-01-01T10:00:00.000Z"),
+      embedding: emb1,
     });
 
     const mem2 = await Memory.create({
@@ -127,6 +135,7 @@ const runTests = async () => {
       content: "Prefers concise technical answers",
       status: MEMORY_STATUSES.ACTIVE,
       createdAt: new Date("2026-01-01T10:05:00.000Z"),
+      embedding: emb2,
     });
 
     const chatRes1 = await fetch(`${baseUrl}/api/v1/ai/chat`, {

@@ -16,7 +16,7 @@ Your task is to produce a concise, structured summary of the conversation so far
 The summary will be used as context for future turns so the assistant knows what has been discussed, what technical decisions were made, and where things were left off.
 
 Rules:
-1. Focus on key topics discussed, technical decisions, code/architecture discussed, user goals, and current progress.
+1. Focus ONLY on topics and decisions actively discussed by the user in this conversation, technical decisions made, code/architecture discussed, user goals, and current progress. Do not incorporate background user preferences, facts, or technologies merely cited by the assistant unless actively discussed in this dialogue.
 2. Explicitly note what was being worked on and where the conversation left off.
 3. Keep the summary concise (under 250 words / 1500 characters).
 4. Do NOT include filler, conversational pleasantries, internal IDs, or secrets.

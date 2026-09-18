@@ -229,3 +229,158 @@ export const searchActiveMemoriesByVector = async (
   return scored.slice(0, limit);
 };
 
+
+export type TextSearchOptions = {
+  limit?: number | undefined;
+  minScore?: number | undefined;
+};
+
+const STOP_WORDS = new Set([
+  "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "aren", "as", "at",
+  "be", "because", "been", "before", "being", "below", "between", "both", "but", "by",
+  "can", "could", "did", "do", "does", "doing", "down", "during",
+  "each", "few", "for", "from", "further",
+  "had", "has", "have", "having", "he", "her", "here", "hers", "herself", "him", "himself", "his", "how",
+  "i", "if", "in", "into", "is", "it", "its", "itself",
+  "just", "ll",
+  "m", "me", "might", "more", "most", "my", "myself",
+  "no", "nor", "not", "now",
+  "o", "of", "off", "on", "once", "only", "or", "other", "our", "ours", "ourselves", "out", "over", "own",
+  "re",
+  "s", "same", "shan", "she", "should", "so", "some", "such",
+  "t", "than", "that", "the", "their", "theirs", "them", "themselves", "then", "there", "these", "they", "this", "those", "through", "to", "too",
+  "under", "until", "up",
+  "ve", "very",
+  "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom", "why", "will", "with", "won", "would",
+  "y", "you", "your", "yours", "yourself", "yourselves",
+  "okay", "ok", "hey", "hi", "hello", "please", "tell", "say", "know", "think", "remember",
+  "last", "past", "previous", "recent", "conversation", "convo", "chat", "session", "talk", "dialogue", "something", "anything"
+]);
+
+const WEAK_MODIFIERS = new Set([
+  "favorite", "favourite", "prefer", "preferred", "preference", "preferences",
+  "use", "uses", "using", "used",
+  "learn", "learns", "learning",
+  "work", "works", "working",
+  "am", "is", "are"
+]);
+
+const normalizeAndTokenize = (text: string): string[] => {
+  const clean = text
+    .toLowerCase()
+    .replace(/node\.js/g, "nodejs")
+    .replace(/c\+\+/g, "cpp")
+    .replace(/c\#/g, "csharp")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return clean.split(" ").filter((w) => w.length > 1);
+};
+
+const stemWord = (word: string): string => {
+  if (word.endsWith("ies")) return word.slice(0, -3) + "y";
+  if (word.endsWith("es")) return word.slice(0, -2);
+  if (word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
+  if (word.endsWith("ing")) return word.slice(0, -3);
+  if (word.endsWith("ed")) return word.slice(0, -2);
+  return word;
+};
+
+export const calculateTextRelevance = (
+  query: string,
+  memoryContent: string,
+): number => {
+  const rawQueryTokens = normalizeAndTokenize(query);
+  const meaningfulQueryTokens = rawQueryTokens.filter((t) => !STOP_WORDS.has(t));
+  if (meaningfulQueryTokens.length === 0) return 0;
+
+  const memTokens = normalizeAndTokenize(memoryContent);
+  if (memTokens.length === 0) return 0;
+
+  const memSet = new Set(memTokens);
+  const memStems = new Set(memTokens.map(stemWord));
+
+  let strongMatches = 0;
+  let weakMatches = 0;
+  let strongQueryCount = 0;
+  let totalScore = 0;
+
+  for (const qToken of meaningfulQueryTokens) {
+    const isWeak = WEAK_MODIFIERS.has(qToken);
+    if (!isWeak) {
+      strongQueryCount++;
+    }
+
+    const qStem = stemWord(qToken);
+    let matched = false;
+    let matchScore = 0;
+
+    if (memSet.has(qToken)) {
+      matched = true;
+      matchScore = isWeak ? 0.5 : 1.0;
+    } else if (memStems.has(qStem)) {
+      matched = true;
+      matchScore = isWeak ? 0.4 : 0.85;
+    } else {
+      if (qToken.startsWith("tech") && memTokens.some((t) => t.startsWith("tech"))) {
+        matched = true;
+        matchScore = 0.85;
+      }
+    }
+
+    if (matched) {
+      if (isWeak) weakMatches++;
+      else strongMatches++;
+      totalScore += matchScore;
+    }
+  }
+
+  // Strict specificity guard: If the query specified strong entity tokens
+  // but zero strong entity tokens matched, do not match on weak modifiers alone
+  if (strongQueryCount > 0 && strongMatches === 0) {
+    return 0;
+  }
+
+  return totalScore / meaningfulQueryTokens.length;
+};
+
+export const searchActiveMemoriesByTextRelevance = async (
+  userId: string | Types.ObjectId,
+  query: string,
+  options?: TextSearchOptions,
+): Promise<VectorSearchResult[]> => {
+  const userObjectId =
+    typeof userId === "string" ? new Types.ObjectId(userId) : userId;
+  const limit = Math.max(1, options?.limit ?? 10);
+  const minScore = options?.minScore ?? 0.25;
+
+  const activeUserMemories = await Memory.find({
+    userId: userObjectId,
+    status: MEMORY_STATUSES.ACTIVE,
+    deletedAt: null,
+  }).lean();
+
+  if (!activeUserMemories || activeUserMemories.length === 0) {
+    return [];
+  }
+
+  const scored: VectorSearchResult[] = [];
+  for (const doc of activeUserMemories) {
+    const sim = calculateTextRelevance(query, doc.content);
+    if (sim >= minScore) {
+      scored.push({
+        _id: doc._id as Types.ObjectId,
+        userId: doc.userId as Types.ObjectId,
+        type: doc.type,
+        content: doc.content,
+        status: doc.status,
+        createdAt: doc.createdAt,
+        score: sim,
+      });
+    }
+  }
+
+  scored.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  return scored.slice(0, limit);
+};

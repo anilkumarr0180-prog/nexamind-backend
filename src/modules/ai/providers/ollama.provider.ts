@@ -1,5 +1,6 @@
 import { AppError } from "../../../errors/app.error.js";
 import { env } from "../../../config/env.js";
+import { NEXAMIND_CHAT_SYSTEM_PROMPT } from "../prompts/system.prompt.js";
 import type {
   AIProvider,
   AIMessage,
@@ -67,6 +68,13 @@ export class OllamaProvider implements AIProvider {
 
       return msgObj;
     });
+
+    if (!messages.some((m) => m.role === "system")) {
+      formattedMessages.unshift({
+        role: "system",
+        content: NEXAMIND_CHAT_SYSTEM_PROMPT,
+      });
+    }
 
     const requestBody: Record<string, unknown> = {
       model,
@@ -220,6 +228,13 @@ export class OllamaProvider implements AIProvider {
 
       return msgObj;
     });
+
+    if (!messages.some((m) => m.role === "system")) {
+      formattedMessages.unshift({
+        role: "system",
+        content: NEXAMIND_CHAT_SYSTEM_PROMPT,
+      });
+    }
 
     const requestBody: Record<string, unknown> = {
       model,

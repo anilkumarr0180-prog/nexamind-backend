@@ -22,6 +22,11 @@ interface SuiteResult {
 
 const TEST_SUITES: TestSuite[] = [
   {
+    id: "auth-registration",
+    name: "Auth: Registration UX & Safety",
+    file: "auth-registration.test.ts",
+  },
+  {
     id: "cors",
     name: "F04: CORS Hardening",
     file: "cors.test.ts",
@@ -95,6 +100,16 @@ const TEST_SUITES: TestSuite[] = [
     id: "memory-semantic",
     name: "M5: Semantic Memory Intelligence",
     file: "memory-semantic.test.ts",
+  },
+  {
+    id: "memory-wording-relevance",
+    name: "M6: Memory Relevance & Assistant Wording",
+    file: "memory-wording-relevance.test.ts",
+  },
+  {
+    id: "memory-text-fallback",
+    name: "M7: Memory Text-Relevance Fallback & Isolation",
+    file: "memory-text-fallback.test.ts",
   },
   {
     id: "agent-tool-executor",

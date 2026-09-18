@@ -290,9 +290,9 @@ const runTests = async () => {
     console.log("✓ Vectors protected: select: false ensures zero vector leakage");
 
     // -------------------------------------------------------------
-    // Test 6: Fallback to recency when semantic query yields 0 vector results
+    // Test 6: Zero fallback to recency when semantic query yields 0 vector results
     // -------------------------------------------------------------
-    console.log("\n[Test 6] Testing fallback to recency when user only has legacy memories without embeddings...");
+    console.log("\n[Test 6] Testing zero fallback to recency when user only has legacy memories without embeddings...");
     const userCEmail = `user_c_sem_${testId}@example.com`;
     const regC = await authService.register({ email: userCEmail, password });
     const userCId = regC.user.id;
@@ -309,12 +309,12 @@ const runTests = async () => {
       "What are my preferences?",
     );
 
-    assert.ok(semanticContext, "Context must fall back to recency-based memories");
-    assert.ok(
-      semanticContext.includes("Legacy active memory created without embedding"),
-      "Fallback must include active legacy memories",
+    assert.equal(
+      semanticContext,
+      null,
+      "Context must NOT fall back to arbitrary recency-based memories when no semantic matches exist",
     );
-    console.log("✓ Fallback to recency verified when user has legacy memories without embeddings");
+    console.log("✓ Zero recency fallback verified: returns null instead of dumping arbitrary memories");
 
     // -------------------------------------------------------------
     // Test 7: Fail-open semantics when embedding provider fails

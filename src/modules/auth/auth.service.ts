@@ -8,6 +8,7 @@ import type { LoginInput, RegisterInput } from "./auth.validation.js";
 
 export type SafeUser = {
   id: string;
+  name?: string | null;
   email: string;
   status: string;
   roles: string[];
@@ -23,6 +24,7 @@ export type AuthResult = {
 
 export const toSafeUser = (user: {
   _id: { toString(): string };
+  name?: string | null;
   email: string;
   status: string;
   roles: string[];
@@ -31,6 +33,7 @@ export const toSafeUser = (user: {
   updatedAt?: Date;
 }): SafeUser => ({
   id: user._id.toString(),
+  name: user.name ?? null,
   email: user.email,
   status: user.status,
   roles: [...user.roles],
@@ -41,6 +44,7 @@ export const toSafeUser = (user: {
 
 export const register = async (input: RegisterInput): Promise<AuthResult> => {
   const normalizedEmail = input.email.trim().toLowerCase();
+  const normalizedName = input.name ? input.name.trim() : null;
 
   const existingUser = await userRepository.findUserByEmail(normalizedEmail);
   if (existingUser) {
@@ -56,6 +60,7 @@ export const register = async (input: RegisterInput): Promise<AuthResult> => {
   let user;
   try {
     user = await userRepository.createUser({
+      name: normalizedName,
       email: normalizedEmail,
       passwordHash,
     });
