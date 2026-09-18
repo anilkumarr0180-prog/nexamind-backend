@@ -272,6 +272,15 @@ export const processChatRequest = async (
       throw executionError;
     }
 
+    const execErrMsg = executionError instanceof Error ? executionError.message : "AI provider failed to generate response";
+    if (execErrMsg.toLowerCase().includes("too large") || execErrMsg.toLowerCase().includes("entity too large")) {
+      throw new AppError(
+        "AI request is too large. Please start a new conversation or shorten the context.",
+        413,
+        "REQUEST_TOO_LARGE",
+      );
+    }
+
     throw new AppError(
       "AI provider failed to generate response",
       502,
@@ -576,8 +585,16 @@ export const processChatStream = async (
     if (streamError instanceof AppError) {
       throw streamError;
     }
+    const streamErrMsg = streamError instanceof Error ? streamError.message : "AI provider failed to generate response";
+    if (streamErrMsg.toLowerCase().includes("too large") || streamErrMsg.toLowerCase().includes("entity too large")) {
+      throw new AppError(
+        "AI request is too large. Please start a new conversation or shorten the context.",
+        413,
+        "REQUEST_TOO_LARGE",
+      );
+    }
     throw new AppError(
-      streamError instanceof Error ? streamError.message : "AI provider failed to generate response",
+      streamErrMsg,
       502,
       "AI_PROVIDER_ERROR",
     );
@@ -665,8 +682,16 @@ export const processChatStream = async (
     if (streamError instanceof AppError) {
       throw streamError;
     }
+    const streamErrMsg = streamError instanceof Error ? streamError.message : "AI provider failed to generate response";
+    if (streamErrMsg.toLowerCase().includes("too large") || streamErrMsg.toLowerCase().includes("entity too large")) {
+      throw new AppError(
+        "AI request is too large. Please start a new conversation or shorten the context.",
+        413,
+        "REQUEST_TOO_LARGE",
+      );
+    }
     throw new AppError(
-      streamError instanceof Error ? streamError.message : "AI provider failed to generate response",
+      streamErrMsg,
       502,
       "AI_PROVIDER_ERROR",
     );

@@ -112,6 +112,11 @@ const TEST_SUITES: TestSuite[] = [
     file: "streaming-regression.test.ts",
   },
   {
+    id: "groq-413-streaming",
+    name: "AI Streaming: Groq 413 & Lifecycle Semantics",
+    file: "groq-413-streaming.test.ts",
+  },
+  {
     id: "agent-tool-executor",
     name: "Agent Core: Tool Executor",
     file: "agent-tool-executor.test.ts",
