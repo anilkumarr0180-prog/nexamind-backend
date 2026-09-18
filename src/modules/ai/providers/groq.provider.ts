@@ -492,6 +492,11 @@ export class GroqProvider implements AIProvider {
 
             try {
               const parsed = JSON.parse(dataStr);
+              if (parsed.error) {
+                const errorMsg = parsed.error.message || "Groq API stream error";
+                throw new AppError(errorMsg, 502, "AI_PROVIDER_ERROR");
+              }
+
               const deltaContent = parsed.choices?.[0]?.delta?.content;
               const usage = parsed.usage
                 ? {
@@ -515,8 +520,58 @@ export class GroqProvider implements AIProvider {
                   done: true,
                 };
               }
-            } catch {
+            } catch (jsonErr) {
+              if (jsonErr instanceof AppError) throw jsonErr;
               // Ignore partial JSON parse errors for intermediate chunks
+            }
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        const remainingLines = buffer.split("\n");
+        for (const rawLine of remainingLines) {
+          const line = rawLine.trim();
+          if (!line || line.startsWith(":")) continue;
+
+          if (line.startsWith("data: ")) {
+            const dataStr = line.slice(6).trim();
+            if (dataStr === "[DONE]") {
+              return;
+            }
+
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (parsed.error) {
+                const errorMsg = parsed.error.message || "Groq API stream error";
+                throw new AppError(errorMsg, 502, "AI_PROVIDER_ERROR");
+              }
+
+              const deltaContent = parsed.choices?.[0]?.delta?.content;
+              const usage = parsed.usage
+                ? {
+                    inputTokens: parsed.usage.prompt_tokens ?? 0,
+                    outputTokens: parsed.usage.completion_tokens ?? 0,
+                    totalTokens: parsed.usage.total_tokens ?? 0,
+                  }
+                : undefined;
+
+              if (deltaContent) {
+                yield {
+                  content: deltaContent,
+                  model: parsed.model || targetModel,
+                  usage,
+                };
+              } else if (usage) {
+                yield {
+                  content: "",
+                  model: parsed.model || targetModel,
+                  usage,
+                  done: true,
+                };
+              }
+            } catch (jsonErr) {
+              if (jsonErr instanceof AppError) throw jsonErr;
             }
           }
         }

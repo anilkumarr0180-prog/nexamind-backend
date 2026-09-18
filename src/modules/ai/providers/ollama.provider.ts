@@ -328,6 +328,10 @@ export class OllamaProvider implements AIProvider {
 
           try {
             const data = JSON.parse(line);
+            if (data.error) {
+              throw new AppError(data.error, 502, "AI_PROVIDER_ERROR");
+            }
+
             const delta = data.message?.content;
             if (delta) {
               yield {
@@ -351,8 +355,50 @@ export class OllamaProvider implements AIProvider {
               };
               return;
             }
-          } catch {
+          } catch (err) {
+            if (err instanceof AppError) throw err;
             // Ignore partial NDJSON parsing glitches
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        const remainingLines = buffer.split("\n");
+        for (const rawLine of remainingLines) {
+          const line = rawLine.trim();
+          if (!line) continue;
+
+          try {
+            const data = JSON.parse(line);
+            if (data.error) {
+              throw new AppError(data.error, 502, "AI_PROVIDER_ERROR");
+            }
+
+            const delta = data.message?.content;
+            if (delta) {
+              yield {
+                content: delta,
+                model: data.model || model,
+              };
+            }
+
+            if (data.done) {
+              const inputTokens = data.prompt_eval_count ?? 0;
+              const outputTokens = data.eval_count ?? 0;
+              yield {
+                content: "",
+                model: data.model || model,
+                usage: {
+                  inputTokens,
+                  outputTokens,
+                  totalTokens: inputTokens + outputTokens,
+                },
+                done: true,
+              };
+              return;
+            }
+          } catch (err) {
+            if (err instanceof AppError) throw err;
           }
         }
       }
