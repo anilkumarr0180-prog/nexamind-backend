@@ -324,22 +324,22 @@ export const processChatRequest = async (
     );
   }
 
-  // 9b. Non-critical automatic memory extraction
-  try {
-    await memoryService.extractAndSaveMemories(
+  // 9b. Non-critical automatic memory extraction (non-blocking)
+  memoryService
+    .extractAndSaveMemories(
       userId,
       {
         userMessageContent: userMessage.content,
         assistantMessageContent: assistantMessage.content,
       },
       provider,
-    );
-  } catch (extractionError) {
-    console.error(
-      "Non-fatal error during automatic memory extraction:",
-      extractionError,
-    );
-  }
+    )
+    .catch((extractionError) => {
+      console.error(
+        "Non-fatal error during automatic memory extraction:",
+        extractionError,
+      );
+    });
 
   // 9c. Non-critical automatic conversation summarization (non-blocking)
   summarizeConversationIfNeeded(
@@ -698,23 +698,23 @@ export const processChatStream = async (
   }
 
   // 5. SUCCESSFUL COMPLETION (no stream error, not aborted)
-  // 9b. Non-critical automatic memory extraction
+  // 9b. Non-critical automatic memory extraction (non-blocking)
   if (!signal?.aborted) {
-    try {
-      await memoryService.extractAndSaveMemories(
+    memoryService
+      .extractAndSaveMemories(
         userId,
         {
           userMessageContent: userMessage.content,
           assistantMessageContent: assistantMessage.content,
         },
         provider,
-      );
-    } catch (extractionError) {
-      console.error(
-        "Non-fatal error during automatic memory extraction:",
-        extractionError,
-      );
-    }
+      )
+      .catch((extractionError) => {
+        console.error(
+          "Non-fatal error during automatic memory extraction:",
+          extractionError,
+        );
+      });
   }
 
   // 9c. Non-critical automatic conversation summarization (non-blocking)
