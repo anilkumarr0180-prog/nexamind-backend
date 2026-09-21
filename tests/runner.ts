@@ -22,6 +22,16 @@ interface SuiteResult {
 
 const TEST_SUITES: TestSuite[] = [
   {
+    id: "billing-checkout",
+    name: "Billing: Checkout API Boundary",
+    file: "billing-checkout.test.ts",
+  },
+  {
+    id: "webhook-billing",
+    name: "Billing: Webhook Pipeline & Credit Grants",
+    file: "webhook-billing.test.ts",
+  },
+  {
     id: "auth-registration",
     name: "Auth: Registration UX & Safety",
     file: "auth-registration.test.ts",

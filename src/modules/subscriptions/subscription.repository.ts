@@ -1,15 +1,21 @@
 import { Types } from "mongoose";
 import { Subscription } from "./subscription.model.js";
-import type { ISubscription } from "./subscription.types.js";
+import type {
+  CreateSubscriptionData,
+  ISubscription,
+  SubscriptionStatus,
+  UpdateSubscriptionData,
+} from "./subscription.types.js";
 
-const CURRENT_STATUSES = [
+export const CURRENT_STATUSES: readonly SubscriptionStatus[] = [
   "ACTIVE",
+  "TRIALING",
   "PAST_DUE",
   "INCOMPLETE",
 ] as const;
 
 export const createSubscription = async (
-  data: Partial<ISubscription>,
+  data: CreateSubscriptionData,
 ): Promise<ISubscription> => {
   return Subscription.create(data);
 };
@@ -41,13 +47,27 @@ export const findSubscriptionById = async (
 
 export const updateSubscriptionById = async (
   subscriptionId: string,
-  data: Partial<ISubscription>,
+  data: UpdateSubscriptionData,
 ): Promise<ISubscription | null> => {
   return Subscription.findByIdAndUpdate(
     subscriptionId,
     { $set: data },
     {
-      new: true,
+      returnDocument: "after",
+      runValidators: true,
+    },
+  ).lean<ISubscription | null>();
+};
+
+export const updateSubscriptionByProviderId = async (
+  providerSubscriptionId: string,
+  data: UpdateSubscriptionData,
+): Promise<ISubscription | null> => {
+  return Subscription.findOneAndUpdate(
+    { providerSubscriptionId },
+    { $set: data },
+    {
+      returnDocument: "after",
       runValidators: true,
     },
   ).lean<ISubscription | null>();

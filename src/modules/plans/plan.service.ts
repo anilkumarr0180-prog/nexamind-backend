@@ -30,3 +30,9 @@ export const getPlanByCode = async (code: string) => {
 
   return plan;
 };
+
+export const getPlanCreditsByCode = async (
+  code: PlanCode,
+): Promise<number> => {
+  return planRepository.getPlanCreditsByCode(code);
+};

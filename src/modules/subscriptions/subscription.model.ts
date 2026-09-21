@@ -1,8 +1,9 @@
 import { Schema, model } from "mongoose";
 import {
-  ISubscription,
+  type ISubscription,
   SUBSCRIPTION_PROVIDERS,
   SUBSCRIPTION_STATUSES,
+  SUBSCRIPTION_INTERVALS,
 } from "./subscription.types.js";
 
 const subscriptionSchema = new Schema<ISubscription>(
@@ -11,7 +12,6 @@ const subscriptionSchema = new Schema<ISubscription>(
       type: Schema.Types.ObjectId,
       ref: "User",
       required: true,
-      index: true,
     },
 
     planId: {
@@ -32,6 +32,25 @@ const subscriptionSchema = new Schema<ISubscription>(
       required: true,
       unique: true,
       trim: true,
+    },
+
+    providerCustomerId: {
+      type: String,
+      required: true,
+      trim: true,
+      index: true,
+    },
+
+    providerProductId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    interval: {
+      type: String,
+      enum: SUBSCRIPTION_INTERVALS,
+      required: true,
     },
 
     status: {
@@ -61,13 +80,20 @@ const subscriptionSchema = new Schema<ISubscription>(
       type: Date,
       default: null,
     },
+
+    endedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
-  }
+  },
 );
+
+subscriptionSchema.index({ userId: 1, status: 1 });
 
 export const Subscription = model<ISubscription>(
   "Subscription",
-  subscriptionSchema
+  subscriptionSchema,
 );
