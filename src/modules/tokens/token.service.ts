@@ -1,8 +1,11 @@
+import mongoose, { Types } from "mongoose";
 import { AppError } from "../../errors/app.error.js";
 import * as tokenRepository from "./token.repository.js";
 import * as userRepository from "../users/user.repository.js";
+import * as creditTransactionRepository from "../credit-transactions/credit-transaction.repository.js";
 
 export const DEFAULT_INITIAL_BALANCE = 100;
+
 const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
 
 export type TokenBalanceResult = {
@@ -19,7 +22,11 @@ export const initializeBalance = async (
   initialBalance: number = DEFAULT_INITIAL_BALANCE,
 ): Promise<TokenBalanceResult> => {
   if (!isValidObjectId(userId)) {
-    throw new AppError("Invalid user ID", 400, "INVALID_USER_ID");
+    throw new AppError(
+      "Invalid user ID",
+      400,
+      "INVALID_USER_ID",
+    );
   }
 
   if (
@@ -35,7 +42,9 @@ export const initializeBalance = async (
     );
   }
 
-  const existing = await tokenRepository.findTokenBalanceByUserId(userId);
+  const existing =
+    await tokenRepository.findTokenBalanceByUserId(userId);
+
   if (existing) {
     return {
       balance: existing.balance,
@@ -62,6 +71,7 @@ export const initializeBalance = async (
     ) {
       const concurrentBalance =
         await tokenRepository.findTokenBalanceByUserId(userId);
+
       if (concurrentBalance) {
         return {
           balance: concurrentBalance.balance,
@@ -82,19 +92,31 @@ export const getBalance = async (
   userId: string,
 ): Promise<TokenBalanceResult> => {
   if (!isValidObjectId(userId)) {
-    throw new AppError("Invalid user ID", 400, "INVALID_USER_ID");
+    throw new AppError(
+      "Invalid user ID",
+      400,
+      "INVALID_USER_ID",
+    );
   }
 
   const user = await userRepository.findUserById(userId);
+
   if (!user) {
-    throw new AppError("User not found", 404, "USER_NOT_FOUND");
+    throw new AppError(
+      "User not found",
+      404,
+      "USER_NOT_FOUND",
+    );
   }
 
   const tokenBalance =
     await tokenRepository.findTokenBalanceByUserId(userId);
 
   if (!tokenBalance) {
-    return initializeBalance(userId, DEFAULT_INITIAL_BALANCE);
+    return initializeBalance(
+      userId,
+      DEFAULT_INITIAL_BALANCE,
+    );
   }
 
   return {
@@ -106,9 +128,14 @@ export const getBalance = async (
 export const deductCredits = async (
   userId: string,
   amount: number,
+  referenceId?: string | null,
 ): Promise<TokenBalanceResult> => {
   if (!isValidObjectId(userId)) {
-    throw new AppError("Invalid user ID", 400, "INVALID_USER_ID");
+    throw new AppError(
+      "Invalid user ID",
+      400,
+      "INVALID_USER_ID",
+    );
   }
 
   if (
@@ -124,42 +151,89 @@ export const deductCredits = async (
     );
   }
 
-  const currentBalance =
-    await tokenRepository.findTokenBalanceByUserId(userId);
+  const session = await mongoose.startSession();
 
-  if (!currentBalance) {
-    throw new AppError(
-      "Token balance not found for user",
-      404,
-      "TOKEN_BALANCE_NOT_FOUND",
-    );
+  try {
+    let result: TokenBalanceResult | null = null;
+
+    await session.withTransaction(async () => {
+      const currentBalance =
+        await tokenRepository.findTokenBalanceByUserId(
+          userId,
+          session,
+        );
+
+      if (!currentBalance) {
+        throw new AppError(
+          "Token balance not found for user",
+          404,
+          "TOKEN_BALANCE_NOT_FOUND",
+        );
+      }
+
+      const balanceBefore = currentBalance.balance;
+
+      const updated =
+        await tokenRepository.atomicDeductBalanceWithSession(
+          new Types.ObjectId(userId),
+          amount,
+          session,
+        );
+
+      if (!updated) {
+        throw new AppError(
+          "Insufficient credit balance",
+          402,
+          "INSUFFICIENT_CREDITS",
+        );
+      }
+
+      const balanceAfter = updated.balance;
+
+      await creditTransactionRepository.createCreditTransaction(
+        {
+          userId: new Types.ObjectId(userId),
+          type: "USAGE",
+          amount,
+          balanceBefore,
+          balanceAfter,
+          referenceId: referenceId ?? null,
+          description: "AI usage",
+        },
+        session,
+      );
+
+      result = {
+        balance: balanceAfter,
+        updatedAt: updated.updatedAt,
+      };
+    });
+
+    if (!result) {
+      throw new AppError(
+        "Failed to process credit deduction",
+        500,
+        "CREDIT_DEDUCTION_FAILED",
+      );
+    }
+
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  const updated = await tokenRepository.atomicDeductBalance(
-    userId,
-    amount,
-  );
-
-  if (!updated) {
-    throw new AppError(
-      "Insufficient credit balance",
-      402,
-      "INSUFFICIENT_CREDITS",
-    );
-  }
-
-  return {
-    balance: updated.balance,
-    updatedAt: updated.updatedAt,
-  };
 };
 
 export const refundCredits = async (
   userId: string,
   amount: number,
+  referenceId?: string | null,
 ): Promise<TokenBalanceResult> => {
   if (!isValidObjectId(userId)) {
-    throw new AppError("Invalid user ID", 400, "INVALID_USER_ID");
+    throw new AppError(
+      "Invalid user ID",
+      400,
+      "INVALID_USER_ID",
+    );
   }
 
   if (
@@ -175,19 +249,74 @@ export const refundCredits = async (
     );
   }
 
-  const updated = await tokenRepository.atomicAddBalance(userId, amount);
+  const session = await mongoose.startSession();
 
-  if (!updated) {
-    throw new AppError(
-      "Token balance not found for user",
-      404,
-      "TOKEN_BALANCE_NOT_FOUND",
-    );
+  try {
+    let result: TokenBalanceResult | null = null;
+
+    await session.withTransaction(async () => {
+      const currentBalance =
+        await tokenRepository.findTokenBalanceByUserId(
+          userId,
+          session,
+        );
+
+      if (!currentBalance) {
+        throw new AppError(
+          "Token balance not found for user",
+          404,
+          "TOKEN_BALANCE_NOT_FOUND",
+        );
+      }
+
+      const balanceBefore = currentBalance.balance;
+
+      const updated =
+        await tokenRepository.atomicAddBalanceWithSession(
+          new Types.ObjectId(userId),
+          amount,
+          session,
+        );
+
+      if (!updated) {
+        throw new AppError(
+          "Token balance not found for user",
+          404,
+          "TOKEN_BALANCE_NOT_FOUND",
+        );
+      }
+
+      const balanceAfter = updated.balance;
+
+      await creditTransactionRepository.createCreditTransaction(
+        {
+          userId: new Types.ObjectId(userId),
+          type: "REFUND",
+          amount,
+          balanceBefore,
+          balanceAfter,
+          referenceId: referenceId ?? null,
+          description: "Credit refund",
+        },
+        session,
+      );
+
+      result = {
+        balance: balanceAfter,
+        updatedAt: updated.updatedAt,
+      };
+    });
+
+    if (!result) {
+      throw new AppError(
+        "Failed to process credit refund",
+        500,
+        "CREDIT_REFUND_FAILED",
+      );
+    }
+
+    return result;
+  } finally {
+    await session.endSession();
   }
-
-  return {
-    balance: updated.balance,
-    updatedAt: updated.updatedAt,
-  };
 };
-
