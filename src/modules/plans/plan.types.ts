@@ -1,4 +1,4 @@
-import type { PLAN_CODES } from "./plans.model.js";
+import type { PLAN_CODES } from "./plan.model.js";
 
 export type PlanCode = (typeof PLAN_CODES)[keyof typeof PLAN_CODES];
 

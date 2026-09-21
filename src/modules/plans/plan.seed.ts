@@ -1,7 +1,7 @@
 import "dotenv/config";
 import mongoose from "mongoose";
 import { env } from "../../config/env.js";
-import { Plan, PLAN_CODES } from "./plan.model.js";
+import { Plan, PLAN_CODES, PLAN_CREDITS } from "./plan.model.js";
 import type { PlanCode } from "./plan.types.js";
 
 interface SeedPlan {
@@ -23,7 +23,7 @@ const SEED_PLANS: SeedPlan[] = [
     name: "Free",
     description:
       "Get started with NexaMind at no cost. Perfect for personal use and experimentation.",
-    monthlyCredits: 100,
+    monthlyCredits: PLAN_CREDITS[PLAN_CODES.FREE],
     features: {
       memory: false,
       agent: false,
@@ -36,7 +36,7 @@ const SEED_PLANS: SeedPlan[] = [
     name: "Plus",
     description:
       "Boost your productivity with more credits and access to memory and agent features.",
-    monthlyCredits: 5000,
+    monthlyCredits: PLAN_CREDITS[PLAN_CODES.PLUS],
     features: {
       memory: true,
       agent: true,
@@ -49,7 +49,7 @@ const SEED_PLANS: SeedPlan[] = [
     name: "Pro",
     description:
       "Unlock the full power of NexaMind with maximum credits, advanced models, memory, and agents.",
-    monthlyCredits: 20000,
+    monthlyCredits: PLAN_CREDITS[PLAN_CODES.PRO],
     features: {
       memory: true,
       agent: true,

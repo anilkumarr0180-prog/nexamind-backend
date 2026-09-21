@@ -14,6 +14,7 @@ import memoryRoutes from "./modules/memory/memory.routes.js";
 import agentRoutes from "./modules/agent/agent.routes.js";
 import planRoutes from "./modules/plans/plan.routes.js";
 import subscriptionRoutes from "./modules/subscriptions/subscription.routes.js";
+import { polarWebhookHandler } from "./modules/subscriptions/webhook.controller.js";
 
 import { errorHandler } from "./middleware/error-handler.js";
 
@@ -31,6 +32,14 @@ app.use(
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
+);
+
+// Polar webhook — MUST be registered before express.json() so the raw body
+// Buffer is preserved for HMAC-SHA256 signature verification.
+app.post(
+  "/api/v1/subscriptions/webhook",
+  express.raw({ type: "application/json" }),
+  polarWebhookHandler,
 );
 
 app.use(express.json());

@@ -3,8 +3,10 @@ import { AppError } from "../../errors/app.error.js";
 import * as tokenRepository from "./token.repository.js";
 import * as userRepository from "../users/user.repository.js";
 import * as creditTransactionRepository from "../credit-transactions/credit-transaction.repository.js";
+import { PLAN_CODES, PLAN_CREDITS } from "../plans/plan.model.js";
+import * as planRepository from "../plans/plan.repository.js";
 
-export const DEFAULT_INITIAL_BALANCE = 100;
+export const DEFAULT_INITIAL_BALANCE = PLAN_CREDITS[PLAN_CODES.FREE];
 
 const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
 
@@ -19,7 +21,7 @@ const isValidObjectId = (id: string): boolean => {
 
 export const initializeBalance = async (
   userId: string,
-  initialBalance: number = DEFAULT_INITIAL_BALANCE,
+  initialBalance?: number,
 ): Promise<TokenBalanceResult> => {
   if (!isValidObjectId(userId)) {
     throw new AppError(
@@ -29,19 +31,7 @@ export const initializeBalance = async (
     );
   }
 
-  if (
-    typeof initialBalance !== "number" ||
-    !Number.isFinite(initialBalance) ||
-    !Number.isInteger(initialBalance) ||
-    initialBalance < 0
-  ) {
-    throw new AppError(
-      "Initial balance must be a non-negative integer",
-      400,
-      "INVALID_CREDIT_AMOUNT",
-    );
-  }
-
+  // Check if balance already exists. Never overwrite an existing balance!
   const existing =
     await tokenRepository.findTokenBalanceByUserId(userId);
 
@@ -52,16 +42,89 @@ export const initializeBalance = async (
     };
   }
 
+  // Resolve initial credits through canonical Plan definition if not explicitly provided
+  const targetBalance =
+    initialBalance !== undefined
+      ? initialBalance
+      : await planRepository.getPlanCreditsByCode(PLAN_CODES.FREE);
+
+  if (
+    typeof targetBalance !== "number" ||
+    !Number.isFinite(targetBalance) ||
+    !Number.isInteger(targetBalance) ||
+    targetBalance < 0
+  ) {
+    throw new AppError(
+      "Initial balance must be a non-negative integer",
+      400,
+      "INVALID_CREDIT_AMOUNT",
+    );
+  }
+
+  const session = await mongoose.startSession();
+
   try {
-    const created = await tokenRepository.createTokenBalance({
-      userId,
-      balance: initialBalance,
+    let result: TokenBalanceResult | null = null;
+
+    await session.withTransaction(async () => {
+      const current =
+        await tokenRepository.findTokenBalanceByUserId(userId, session);
+
+      if (current) {
+        result = {
+          balance: current.balance,
+          updatedAt: current.updatedAt,
+        };
+        return;
+      }
+
+      const created = await tokenRepository.createTokenBalance(
+        {
+          userId,
+          balance: targetBalance,
+        },
+        session,
+      );
+
+      // Record immutable audit ledger entry for the initial grant
+      await creditTransactionRepository.createCreditTransaction(
+        {
+          userId: new Types.ObjectId(userId),
+          type: "PLAN_GRANT",
+          amount: targetBalance,
+          balanceBefore: 0,
+          balanceAfter: targetBalance,
+          referenceId: `free_grant_${userId}`,
+          description: "Initial free plan credit grant",
+        },
+        session,
+      );
+
+      result = {
+        balance: created.balance,
+        updatedAt: created.updatedAt,
+      };
     });
 
-    return {
-      balance: created.balance,
-      updatedAt: created.updatedAt,
-    };
+    if (result) {
+      return result;
+    }
+
+    const concurrentBalance =
+      await tokenRepository.findTokenBalanceByUserId(userId);
+
+    if (concurrentBalance) {
+      return {
+        balance: concurrentBalance.balance,
+        updatedAt: concurrentBalance.updatedAt,
+      };
+    }
+
+    throw new AppError(
+      "Failed to initialize token balance",
+      500,
+      "TOKEN_INITIALIZATION_FAILED",
+    );
   } catch (error: unknown) {
     if (
       typeof error === "object" &&
@@ -80,11 +143,17 @@ export const initializeBalance = async (
       }
     }
 
+    if (error instanceof AppError) {
+      throw error;
+    }
+
     throw new AppError(
       "Failed to initialize token balance",
       500,
       "TOKEN_INITIALIZATION_FAILED",
     );
+  } finally {
+    await session.endSession();
   }
 };
 
@@ -113,10 +182,7 @@ export const getBalance = async (
     await tokenRepository.findTokenBalanceByUserId(userId);
 
   if (!tokenBalance) {
-    return initializeBalance(
-      userId,
-      DEFAULT_INITIAL_BALANCE,
-    );
+    return initializeBalance(userId);
   }
 
   return {

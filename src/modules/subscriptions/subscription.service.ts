@@ -1,14 +1,15 @@
-import {
-  findCurrentSubscriptionByUserId,
-  findSubscriptionByProviderId,
-} from "./subscription.repository.js";
+import * as subscriptionRepository from "./subscription.repository.js";
 import { findPlanById } from "../plans/plan.repository.js";
+import type {
+  CreateSubscriptionData,
+  UpdateSubscriptionData,
+} from "./subscription.types.js";
 
 export const getCurrentSubscription = async (
   userId: string,
 ) => {
   const subscription =
-    await findCurrentSubscriptionByUserId(userId);
+    await subscriptionRepository.findCurrentSubscriptionByUserId(userId);
 
   if (!subscription) {
     return null;
@@ -22,6 +23,7 @@ export const getCurrentSubscription = async (
     id: subscription._id.toString(),
     status: subscription.status,
     provider: subscription.provider,
+    interval: subscription.interval,
     currentPeriodStart: subscription.currentPeriodStart,
     currentPeriodEnd: subscription.currentPeriodEnd,
     cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
@@ -43,7 +45,23 @@ export const getCurrentSubscription = async (
 export const getSubscriptionByProviderId = async (
   providerSubscriptionId: string,
 ) => {
-  return findSubscriptionByProviderId(
+  return subscriptionRepository.findSubscriptionByProviderId(
     providerSubscriptionId,
+  );
+};
+
+export const createSubscription = async (
+  data: CreateSubscriptionData,
+) => {
+  return subscriptionRepository.createSubscription(data);
+};
+
+export const updateSubscriptionByProviderId = async (
+  providerSubscriptionId: string,
+  data: UpdateSubscriptionData,
+) => {
+  return subscriptionRepository.updateSubscriptionByProviderId(
+    providerSubscriptionId,
+    data,
   );
 };

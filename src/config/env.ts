@@ -163,6 +163,37 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(50),
+
+  // Polar Billing Provider
+  POLAR_ACCESS_TOKEN: z
+    .string()
+    .trim()
+    .min(1, "POLAR_ACCESS_TOKEN is required"),
+
+  POLAR_WEBHOOK_SECRET: z
+    .string()
+    .trim()
+    .min(1, "POLAR_WEBHOOK_SECRET is required"),
+
+  POLAR_PRODUCT_PLUS_MONTHLY: z
+    .string()
+    .trim()
+    .min(1, "POLAR_PRODUCT_PLUS_MONTHLY is required"),
+
+  POLAR_PRODUCT_PLUS_YEARLY: z
+    .string()
+    .trim()
+    .min(1, "POLAR_PRODUCT_PLUS_YEARLY is required"),
+
+  POLAR_PRODUCT_PRO_MONTHLY: z
+    .string()
+    .trim()
+    .min(1, "POLAR_PRODUCT_PRO_MONTHLY is required"),
+
+  POLAR_PRODUCT_PRO_YEARLY: z
+    .string()
+    .trim()
+    .min(1, "POLAR_PRODUCT_PRO_YEARLY is required"),
 }).superRefine((data, ctx) => {
   if (data.AI_PROVIDER === "groq" && (!data.GROQ_API_KEY || data.GROQ_API_KEY.trim().length === 0)) {
     ctx.addIssue({

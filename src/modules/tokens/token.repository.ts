@@ -17,7 +17,12 @@ export const findTokenBalanceByUserId = async (
 
 export const createTokenBalance = async (
   data: CreateTokenBalanceData,
+  session?: ClientSession,
 ): Promise<ITokenBalance> => {
+  if (session) {
+    const docs = await TokenBalance.create([data], { session });
+    return docs[0] as ITokenBalance;
+  }
   return TokenBalance.create(data);
 };
 

@@ -1,4 +1,4 @@
-import { Plan, type IPlan } from "./plan.model.js";
+import { Plan, PLAN_CREDITS, type IPlan } from "./plan.model.js";
 import type { PlanCode } from "./plan.types.js";
 
 export const findActivePlans = async (): Promise<IPlan[]> => {
@@ -17,6 +17,13 @@ export const findPlanById = async (
   planId: string,
 ): Promise<IPlan | null> => {
   return Plan.findOne({ _id: planId, active: true }).lean<IPlan | null>();
+};
+
+export const getPlanCreditsByCode = async (
+  code: PlanCode,
+): Promise<number> => {
+  const plan = await findPlanByCode(code);
+  return plan?.monthlyCredits ?? PLAN_CREDITS[code];
 };
 
 export const upsertPlanByCode = async (

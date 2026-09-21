@@ -7,6 +7,14 @@ export const PLAN_CODES = {
   PRO: "PRO",
 } as const;
 
+export const PLAN_CREDITS = {
+  [PLAN_CODES.FREE]: 100,
+  [PLAN_CODES.PLUS]: 5000,
+  [PLAN_CODES.PRO]: 20000,
+} as const;
+
+export const CANONICAL_PLAN_CREDITS = PLAN_CREDITS;
+
 export interface IPlan extends Document {
   code: PlanCode;
   name: string;
