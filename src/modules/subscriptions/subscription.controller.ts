@@ -31,6 +31,122 @@ export const getMySubscription = async (
   });
 };
 
+export const syncMySubscription = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  const authUser = req.user;
+
+  if (!authUser) {
+    throw new AppError(
+      "Authentication required",
+      401,
+      "UNAUTHORIZED",
+    );
+  }
+
+  await subscriptionService.syncUserSubscriptionWithPolar(authUser.userId);
+  const subscription = await subscriptionService.getCurrentSubscription(authUser.userId);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      subscription,
+    },
+    message: "Subscription status synchronized successfully.",
+  });
+};
+
+export const upgradeSubscription = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  const authUser = req.user;
+
+  if (!authUser) {
+    throw new AppError(
+      "Authentication required",
+      401,
+      "UNAUTHORIZED",
+    );
+  }
+
+  const { planCode, interval } = req.body;
+  if (!planCode || !interval) {
+    throw new AppError(
+      "planCode and interval are required",
+      400,
+      "INVALID_INPUT",
+    );
+  }
+
+  const result = await subscriptionService.upgradeSubscription(
+    authUser.userId,
+    planCode,
+    interval,
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result,
+    message: `Successfully upgraded to ${planCode}! ${result.creditGrant > 0 ? `${result.creditGrant.toLocaleString()} credits added to your balance.` : ''}`.trim(),
+  });
+};
+
+export const cancelSubscription = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  const authUser = req.user;
+
+  if (!authUser) {
+    throw new AppError(
+      "Authentication required",
+      401,
+      "UNAUTHORIZED",
+    );
+  }
+
+  const subscription = await subscriptionService.cancelSubscription(
+    authUser.userId,
+  );
+
+  res.status(200).json({
+    success: true,
+    data: {
+      subscription,
+    },
+    message: "Subscription auto-renewal has been cancelled. Plan remains active until period end.",
+  });
+};
+
+export const resumeSubscription = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  const authUser = req.user;
+
+  if (!authUser) {
+    throw new AppError(
+      "Authentication required",
+      401,
+      "UNAUTHORIZED",
+    );
+  }
+
+  const subscription = await subscriptionService.resumeSubscription(
+    authUser.userId,
+  );
+
+  res.status(200).json({
+    success: true,
+    data: {
+      subscription,
+    },
+    message: "Subscription auto-renewal has been successfully resumed.",
+  });
+};
+
 export const createCheckoutSession = async (
   req: Request,
   res: Response,
@@ -61,14 +177,6 @@ export const createCheckoutSession = async (
 
 /**
  * GET /api/v1/subscriptions/portal
- *
- * Creates a Polar customer portal session for the authenticated user and
- * returns the portal URL. The customer portal allows users to manage their
- * billing information, payment methods, and subscription details directly
- * through Polar's hosted interface.
- *
- * Uses externalCustomerId (= NexaMind userId) — consistent with checkout setup.
- * Never exposes the Polar access token or internal credentials.
  */
 export const getPortalSession = async (
   req: Request,

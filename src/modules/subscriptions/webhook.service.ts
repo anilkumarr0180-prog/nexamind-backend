@@ -8,7 +8,11 @@ import * as tokenRepository from "../tokens/token.repository.js";
 import * as creditTransactionRepository from "../credit-transactions/credit-transaction.repository.js";
 import * as planRepository from "../plans/plan.repository.js";
 import { resolvePlanByProviderProductId } from "./billing-catalog.service.js";
-import type { SubscriptionInterval, SubscriptionStatus } from "./subscription.types.js";
+import type {
+  SubscriptionInterval,
+  SubscriptionStatus,
+  UpdateSubscriptionData,
+} from "./subscription.types.js";
 import type { PlanCode } from "../plans/plan.types.js";
 
 // ---------------------------------------------------------------------------
@@ -60,24 +64,37 @@ const mapSubscriptionStatus = (polarStatus: string): SubscriptionStatus => {
 };
 
 /**
- * Extracts the NexaMind userId from a Polar subscription's customer.externalId.
- * This was set as `externalCustomerId = userId` at checkout creation time.
+ * Extracts the NexaMind userId from a Polar subscription's customer.externalId or metadata.
  */
 const extractUserIdFromSubscription = (
   polarSub: PolarSubscription,
 ): string | null => {
-  const externalId = polarSub.customer?.externalId;
-  if (!externalId || !externalId.trim()) return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const raw = polarSub as any;
+  const externalId =
+    raw.customer?.externalId ??
+    raw.customer?.external_id ??
+    raw.metadata?.userId ??
+    raw.metadata?.user_id;
+
+  if (!externalId || typeof externalId !== "string" || !externalId.trim()) return null;
   if (!Types.ObjectId.isValid(externalId.trim())) return null;
   return externalId.trim();
 };
 
 /**
- * Extracts the NexaMind userId from a Polar order's customer.externalId.
+ * Extracts the NexaMind userId from a Polar order's customer.externalId or metadata.
  */
 const extractUserIdFromOrder = (polarOrder: PolarOrder): string | null => {
-  const externalId = polarOrder.customer?.externalId;
-  if (!externalId || !externalId.trim()) return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const raw = polarOrder as any;
+  const externalId =
+    raw.customer?.externalId ??
+    raw.customer?.external_id ??
+    raw.metadata?.userId ??
+    raw.metadata?.user_id;
+
+  if (!externalId || typeof externalId !== "string" || !externalId.trim()) return null;
   if (!Types.ObjectId.isValid(externalId.trim())) return null;
   return externalId.trim();
 };
@@ -181,7 +198,7 @@ const grantPlanCredits = async (
 /**
  * Handles `subscription.active`.
  *
- * 1. Resolves the NexaMind user from the Polar customer externalId.
+ * 1. Resolves the NexaMind user from the Polar customer externalId or metadata.
  * 2. Resolves the plan from the provider product ID via billing catalog.
  * 3. Upserts the internal Subscription document.
  * 4. Grants initial plan credits exactly once (idempotent via referenceId).
@@ -189,18 +206,49 @@ const grantPlanCredits = async (
 const handleSubscriptionActive = async (
   polarSub: PolarSubscription,
 ): Promise<void> => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawSub = polarSub as any;
+  const subId = rawSub.id;
+  const productId = rawSub.productId ?? rawSub.product_id;
+  const customerId =
+    rawSub.customerId ?? rawSub.customer_id ?? rawSub.customer?.id;
+  const recurringInterval = rawSub.recurringInterval ?? rawSub.recurring_interval;
+  const currentPeriodStart = rawSub.currentPeriodStart
+    ? new Date(rawSub.currentPeriodStart)
+    : rawSub.current_period_start
+      ? new Date(rawSub.current_period_start)
+      : new Date();
+  const currentPeriodEnd = rawSub.currentPeriodEnd
+    ? new Date(rawSub.currentPeriodEnd)
+    : rawSub.current_period_end
+      ? new Date(rawSub.current_period_end)
+      : undefined;
+  const cancelAtPeriodEnd = Boolean(
+    rawSub.cancelAtPeriodEnd ?? rawSub.cancel_at_period_end ?? false,
+  );
+  const canceledAt = rawSub.canceledAt
+    ? new Date(rawSub.canceledAt)
+    : rawSub.canceled_at
+      ? new Date(rawSub.canceled_at)
+      : null;
+  const endedAt = rawSub.endedAt
+    ? new Date(rawSub.endedAt)
+    : rawSub.ended_at
+      ? new Date(rawSub.ended_at)
+      : null;
+
   const userId = extractUserIdFromSubscription(polarSub);
   if (!userId) {
     console.warn(
-      "[WEBHOOK] subscription.active: could not resolve userId from customer.externalId. Skipping.",
+      "[WEBHOOK] subscription.active: could not resolve userId from customer.externalId or metadata.userId. Skipping.",
     );
     return;
   }
 
-  const catalogMatch = resolvePlanByProviderProductId(polarSub.productId);
+  const catalogMatch = resolvePlanByProviderProductId(productId);
   if (!catalogMatch) {
     console.warn(
-      `[WEBHOOK] subscription.active: productId "${polarSub.productId}" not found in billing catalog. Skipping.`,
+      `[WEBHOOK] subscription.active: productId "${productId}" not found in billing catalog. Skipping.`,
     );
     return;
   }
@@ -215,48 +263,55 @@ const handleSubscriptionActive = async (
     );
   }
 
-  const interval = mapInterval(polarSub.recurringInterval);
-  const status = mapSubscriptionStatus(polarSub.status);
+  const interval = mapInterval(recurringInterval);
+  const status = mapSubscriptionStatus(rawSub.status);
 
   const existingSubscription =
-    await subscriptionRepository.findSubscriptionByProviderId(polarSub.id);
+    await subscriptionRepository.findSubscriptionByProviderId(subId);
 
   if (existingSubscription) {
     // Update the existing subscription
-    await subscriptionRepository.updateSubscriptionByProviderId(polarSub.id, {
+    const updateData: UpdateSubscriptionData = {
       planId: plan._id,
-      providerProductId: polarSub.productId,
+      providerProductId: productId,
       interval,
       status,
-      currentPeriodStart: polarSub.currentPeriodStart,
-      currentPeriodEnd: polarSub.currentPeriodEnd,
-      cancelAtPeriodEnd: polarSub.cancelAtPeriodEnd,
-      canceledAt: polarSub.canceledAt ?? null,
-      endedAt: polarSub.endedAt ?? null,
-    });
+      currentPeriodStart,
+      cancelAtPeriodEnd,
+      canceledAt,
+      endedAt,
+    };
+    if (currentPeriodEnd) {
+      updateData.currentPeriodEnd = currentPeriodEnd;
+    }
+    await subscriptionRepository.updateSubscriptionByProviderId(subId, updateData);
   } else {
     // Create a new subscription
+    const periodEnd =
+      currentPeriodEnd ??
+      new Date(currentPeriodStart.getTime() + 30 * 24 * 60 * 60 * 1000);
+
     await subscriptionRepository.createSubscription({
       userId: new Types.ObjectId(userId),
       planId: plan._id,
       provider: "POLAR",
-      providerSubscriptionId: polarSub.id,
-      providerCustomerId: polarSub.customerId,
-      providerProductId: polarSub.productId,
+      providerSubscriptionId: subId,
+      providerCustomerId: customerId,
+      providerProductId: productId,
       interval,
       status,
-      currentPeriodStart: polarSub.currentPeriodStart,
-      currentPeriodEnd: polarSub.currentPeriodEnd,
-      cancelAtPeriodEnd: polarSub.cancelAtPeriodEnd,
-      canceledAt: polarSub.canceledAt ?? null,
-      endedAt: polarSub.endedAt ?? null,
+      currentPeriodStart,
+      currentPeriodEnd: periodEnd,
+      cancelAtPeriodEnd,
+      canceledAt,
+      endedAt,
     });
   }
 
   // Grant initial plan credits exactly once.
   // The referenceId is deterministic: a duplicate delivery of the same
   // subscription.active cannot produce a second credit grant.
-  const initialGrantRef = `polar_sub_${polarSub.id}_initial_grant`;
+  const initialGrantRef = `polar_sub_${subId}_initial_grant`;
 
   try {
     await grantPlanCredits(
@@ -296,27 +351,52 @@ const handleSubscriptionActive = async (
 const handleSubscriptionCanceled = async (
   polarSub: PolarSubscription,
 ): Promise<void> => {
-  const existing =
-    await subscriptionRepository.findSubscriptionByProviderId(polarSub.id);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawSub = polarSub as any;
+  const subId = rawSub.id;
+  const existing = await subscriptionRepository.findSubscriptionByProviderId(subId);
 
   if (!existing) {
     console.warn(
-      `[WEBHOOK] subscription.canceled: no subscription found for Polar ID "${polarSub.id}". Skipping.`,
+      `[WEBHOOK] subscription.canceled: no subscription found for Polar ID "${subId}". Skipping.`,
     );
     return;
   }
 
-  await subscriptionRepository.updateSubscriptionByProviderId(polarSub.id, {
-    status: mapSubscriptionStatus(polarSub.status),
-    cancelAtPeriodEnd: polarSub.cancelAtPeriodEnd,
-    canceledAt: polarSub.canceledAt ?? null,
-    currentPeriodStart: polarSub.currentPeriodStart,
-    currentPeriodEnd: polarSub.currentPeriodEnd,
-    endedAt: polarSub.endedAt ?? null,
-  });
+  const currentPeriodStart = rawSub.currentPeriodStart
+    ? new Date(rawSub.currentPeriodStart)
+    : rawSub.current_period_start
+      ? new Date(rawSub.current_period_start)
+      : undefined;
+  const currentPeriodEnd = rawSub.currentPeriodEnd
+    ? new Date(rawSub.currentPeriodEnd)
+    : rawSub.current_period_end
+      ? new Date(rawSub.current_period_end)
+      : undefined;
+  const canceledAt = rawSub.canceledAt
+    ? new Date(rawSub.canceledAt)
+    : rawSub.canceled_at
+      ? new Date(rawSub.canceled_at)
+      : null;
+  const endedAt = rawSub.endedAt
+    ? new Date(rawSub.endedAt)
+    : rawSub.ended_at
+      ? new Date(rawSub.ended_at)
+      : null;
+
+  const updateData: UpdateSubscriptionData = {
+    status: mapSubscriptionStatus(rawSub.status),
+    cancelAtPeriodEnd: Boolean(rawSub.cancelAtPeriodEnd ?? rawSub.cancel_at_period_end ?? false),
+    canceledAt,
+    endedAt,
+  };
+  if (currentPeriodStart) updateData.currentPeriodStart = currentPeriodStart;
+  if (currentPeriodEnd) updateData.currentPeriodEnd = currentPeriodEnd;
+
+  await subscriptionRepository.updateSubscriptionByProviderId(subId, updateData);
 
   console.log(
-    `[WEBHOOK] subscription.canceled: updated subscription "${polarSub.id}" (cancelAtPeriodEnd: ${polarSub.cancelAtPeriodEnd})`,
+    `[WEBHOOK] subscription.canceled: updated subscription "${subId}" (cancelAtPeriodEnd: ${rawSub.cancelAtPeriodEnd ?? rawSub.cancel_at_period_end})`,
   );
 };
 
@@ -329,27 +409,52 @@ const handleSubscriptionCanceled = async (
 const handleSubscriptionUncanceled = async (
   polarSub: PolarSubscription,
 ): Promise<void> => {
-  const existing =
-    await subscriptionRepository.findSubscriptionByProviderId(polarSub.id);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawSub = polarSub as any;
+  const subId = rawSub.id;
+  const existing = await subscriptionRepository.findSubscriptionByProviderId(subId);
 
   if (!existing) {
     console.warn(
-      `[WEBHOOK] subscription.uncanceled: no subscription found for Polar ID "${polarSub.id}". Skipping.`,
+      `[WEBHOOK] subscription.uncanceled: no subscription found for Polar ID "${subId}". Skipping.`,
     );
     return;
   }
 
-  await subscriptionRepository.updateSubscriptionByProviderId(polarSub.id, {
-    status: mapSubscriptionStatus(polarSub.status),
-    cancelAtPeriodEnd: polarSub.cancelAtPeriodEnd,
-    canceledAt: polarSub.canceledAt ?? null,
-    currentPeriodStart: polarSub.currentPeriodStart,
-    currentPeriodEnd: polarSub.currentPeriodEnd,
-    endedAt: polarSub.endedAt ?? null,
-  });
+  const currentPeriodStart = rawSub.currentPeriodStart
+    ? new Date(rawSub.currentPeriodStart)
+    : rawSub.current_period_start
+      ? new Date(rawSub.current_period_start)
+      : undefined;
+  const currentPeriodEnd = rawSub.currentPeriodEnd
+    ? new Date(rawSub.currentPeriodEnd)
+    : rawSub.current_period_end
+      ? new Date(rawSub.current_period_end)
+      : undefined;
+  const canceledAt = rawSub.canceledAt
+    ? new Date(rawSub.canceledAt)
+    : rawSub.canceled_at
+      ? new Date(rawSub.canceled_at)
+      : null;
+  const endedAt = rawSub.endedAt
+    ? new Date(rawSub.endedAt)
+    : rawSub.ended_at
+      ? new Date(rawSub.ended_at)
+      : null;
+
+  const updateData: UpdateSubscriptionData = {
+    status: mapSubscriptionStatus(rawSub.status),
+    cancelAtPeriodEnd: Boolean(rawSub.cancelAtPeriodEnd ?? rawSub.cancel_at_period_end ?? false),
+    canceledAt,
+    endedAt,
+  };
+  if (currentPeriodStart) updateData.currentPeriodStart = currentPeriodStart;
+  if (currentPeriodEnd) updateData.currentPeriodEnd = currentPeriodEnd;
+
+  await subscriptionRepository.updateSubscriptionByProviderId(subId, updateData);
 
   console.log(
-    `[WEBHOOK] subscription.uncanceled: subscription "${polarSub.id}" restored to ${polarSub.status}`,
+    `[WEBHOOK] subscription.uncanceled: subscription "${subId}" restored to ${rawSub.status}`,
   );
 };
 
@@ -362,24 +467,39 @@ const handleSubscriptionUncanceled = async (
 const handleSubscriptionPastDue = async (
   polarSub: PolarSubscription,
 ): Promise<void> => {
-  const existing =
-    await subscriptionRepository.findSubscriptionByProviderId(polarSub.id);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawSub = polarSub as any;
+  const subId = rawSub.id;
+  const existing = await subscriptionRepository.findSubscriptionByProviderId(subId);
 
   if (!existing) {
     console.warn(
-      `[WEBHOOK] subscription.past_due: no subscription found for Polar ID "${polarSub.id}". Skipping.`,
+      `[WEBHOOK] subscription.past_due: no subscription found for Polar ID "${subId}". Skipping.`,
     );
     return;
   }
 
-  await subscriptionRepository.updateSubscriptionByProviderId(polarSub.id, {
+  const currentPeriodStart = rawSub.currentPeriodStart
+    ? new Date(rawSub.currentPeriodStart)
+    : rawSub.current_period_start
+      ? new Date(rawSub.current_period_start)
+      : undefined;
+  const currentPeriodEnd = rawSub.currentPeriodEnd
+    ? new Date(rawSub.currentPeriodEnd)
+    : rawSub.current_period_end
+      ? new Date(rawSub.current_period_end)
+      : undefined;
+
+  const updateData: UpdateSubscriptionData = {
     status: "PAST_DUE",
-    currentPeriodStart: polarSub.currentPeriodStart,
-    currentPeriodEnd: polarSub.currentPeriodEnd,
-  });
+  };
+  if (currentPeriodStart) updateData.currentPeriodStart = currentPeriodStart;
+  if (currentPeriodEnd) updateData.currentPeriodEnd = currentPeriodEnd;
+
+  await subscriptionRepository.updateSubscriptionByProviderId(subId, updateData);
 
   console.log(
-    `[WEBHOOK] subscription.past_due: subscription "${polarSub.id}" marked PAST_DUE`,
+    `[WEBHOOK] subscription.past_due: subscription "${subId}" marked PAST_DUE`,
   );
 };
 
@@ -393,25 +513,38 @@ const handleSubscriptionPastDue = async (
 const handleSubscriptionRevoked = async (
   polarSub: PolarSubscription,
 ): Promise<void> => {
-  const existing =
-    await subscriptionRepository.findSubscriptionByProviderId(polarSub.id);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawSub = polarSub as any;
+  const subId = rawSub.id;
+  const existing = await subscriptionRepository.findSubscriptionByProviderId(subId);
 
   if (!existing) {
     console.warn(
-      `[WEBHOOK] subscription.revoked: no subscription found for Polar ID "${polarSub.id}". Skipping.`,
+      `[WEBHOOK] subscription.revoked: no subscription found for Polar ID "${subId}". Skipping.`,
     );
     return;
   }
 
-  await subscriptionRepository.updateSubscriptionByProviderId(polarSub.id, {
+  const canceledAt = rawSub.canceledAt
+    ? new Date(rawSub.canceledAt)
+    : rawSub.canceled_at
+      ? new Date(rawSub.canceled_at)
+      : null;
+  const endedAt = rawSub.endedAt
+    ? new Date(rawSub.endedAt)
+    : rawSub.ended_at
+      ? new Date(rawSub.ended_at)
+      : new Date();
+
+  await subscriptionRepository.updateSubscriptionByProviderId(subId, {
     status: "REVOKED",
-    endedAt: polarSub.endedAt ?? new Date(),
-    canceledAt: polarSub.canceledAt ?? null,
+    endedAt,
+    canceledAt,
     cancelAtPeriodEnd: false,
   });
 
   console.log(
-    `[WEBHOOK] subscription.revoked: subscription "${polarSub.id}" set to REVOKED`,
+    `[WEBHOOK] subscription.revoked: subscription "${subId}" set to REVOKED`,
   );
 };
 
@@ -426,17 +559,23 @@ const handleSubscriptionRevoked = async (
  * the unique CreditTransaction index prevents duplicate grants.
  */
 const handleOrderPaid = async (polarOrder: PolarOrder): Promise<void> => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawOrder = polarOrder as any;
+  const billingReason = rawOrder.billingReason ?? rawOrder.billing_reason;
+  const subscriptionId = rawOrder.subscriptionId ?? rawOrder.subscription_id;
+  const orderId = rawOrder.id;
+
   // Only process subscription renewal orders
-  if (polarOrder.billingReason !== "subscription_cycle") {
+  if (billingReason !== "subscription_cycle") {
     console.log(
-      `[WEBHOOK] order.paid: billingReason="${polarOrder.billingReason}" — not a renewal. Skipping credit grant.`,
+      `[WEBHOOK] order.paid: billingReason="${billingReason}" — not a renewal. Skipping credit grant.`,
     );
     return;
   }
 
-  if (!polarOrder.subscriptionId) {
+  if (!subscriptionId) {
     console.warn(
-      `[WEBHOOK] order.paid: subscription_cycle order "${polarOrder.id}" has no subscriptionId. Skipping.`,
+      `[WEBHOOK] order.paid: subscription_cycle order "${orderId}" has no subscriptionId. Skipping.`,
     );
     return;
   }
@@ -444,19 +583,19 @@ const handleOrderPaid = async (polarOrder: PolarOrder): Promise<void> => {
   const userId = extractUserIdFromOrder(polarOrder);
   if (!userId) {
     console.warn(
-      `[WEBHOOK] order.paid: could not resolve userId from customer.externalId for order "${polarOrder.id}". Skipping.`,
+      `[WEBHOOK] order.paid: could not resolve userId from customer.externalId or metadata for order "${orderId}". Skipping.`,
     );
     return;
   }
 
   // Find the internal subscription to determine the plan
   const internalSub = await subscriptionRepository.findSubscriptionByProviderId(
-    polarOrder.subscriptionId,
+    subscriptionId,
   );
 
   if (!internalSub) {
     console.warn(
-      `[WEBHOOK] order.paid: no internal subscription for Polar ID "${polarOrder.subscriptionId}". Skipping.`,
+      `[WEBHOOK] order.paid: no internal subscription for Polar ID "${subscriptionId}". Skipping.`,
     );
     return;
   }
@@ -471,7 +610,7 @@ const handleOrderPaid = async (polarOrder: PolarOrder): Promise<void> => {
     );
   }
 
-  const renewalGrantRef = `polar_order_${polarOrder.id}_renewal_grant`;
+  const renewalGrantRef = `polar_order_${orderId}_renewal_grant`;
 
   try {
     await grantPlanCredits(

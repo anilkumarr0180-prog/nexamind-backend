@@ -1,5 +1,6 @@
 import { AppError } from "../../errors/app.error.js";
 import { polarClient } from "../../config/polar.js";
+import { env } from "../../config/env.js";
 import { getProviderProductId } from "./billing-catalog.service.js";
 import * as userRepository from "../users/user.repository.js";
 
@@ -16,8 +17,7 @@ export interface CheckoutSessionResult {
 
 /**
  * Creates a Polar Checkout Session for the authenticated user and resolved product ID.
- * Never exposes the Polar access token or internal secrets.
- * Does not mutate database records; activation is handled via webhooks.
+ * Automatically configures successUrl and returnUrl for seamless return and activation.
  */
 export const createCheckoutSession = async (
   input: CreateCheckoutSessionInput,
@@ -34,7 +34,12 @@ export const createCheckoutSession = async (
     throw new AppError("User not found", 404, "USER_NOT_FOUND");
   }
 
-  // 3. Create Checkout Session with Polar SDK
+  // 3. Resolve frontend origin for redirects
+  const frontendOrigin = env.CORS_ORIGINS[0] || "http://localhost:5173";
+  const successUrl = `${frontendOrigin}/app/billing?success=true&plan=${planCode.toUpperCase()}&checkout_id={CHECKOUT_ID}`;
+  const returnUrl = `${frontendOrigin}/app/billing`;
+
+  // 4. Create Checkout Session with Polar SDK
   try {
     const checkout = await polarClient.checkouts.create({
       products: [providerProductId],
@@ -44,6 +49,8 @@ export const createCheckoutSession = async (
       externalCustomerId: userId,
       customerEmail: user.email,
       customerName: user.name ?? undefined,
+      successUrl,
+      returnUrl,
     });
 
     return {

@@ -3,6 +3,10 @@ import { authenticate } from "../../middleware/auth.js";
 import { validate } from "../../middleware/validate.js";
 import {
   getMySubscription,
+  syncMySubscription,
+  upgradeSubscription,
+  cancelSubscription,
+  resumeSubscription,
   createCheckoutSession,
   getPortalSession,
 } from "./subscription.controller.js";
@@ -14,6 +18,31 @@ router.get(
   "/me",
   authenticate,
   getMySubscription,
+);
+
+router.post(
+  "/sync",
+  authenticate,
+  syncMySubscription,
+);
+
+router.post(
+  "/upgrade",
+  authenticate,
+  validate(createCheckoutSessionSchema),
+  upgradeSubscription,
+);
+
+router.post(
+  "/cancel",
+  authenticate,
+  cancelSubscription,
+);
+
+router.post(
+  "/resume",
+  authenticate,
+  resumeSubscription,
 );
 
 router.post(
