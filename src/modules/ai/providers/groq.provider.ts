@@ -41,10 +41,15 @@ type GroqChatCompletionResponse = {
   };
 };
 
-const DEFAULT_RECOMMENDED_MODEL = "qwen/qwen3.8-27b";
-const FALLBACK_MODEL = "groq/compound-mini";
+export const DEFAULT_RECOMMENDED_MODEL = "qwen/qwen3.8-27b";
+export const FALLBACK_MODEL = "openai/gpt-oss-20b";
+export const MAX_PROVIDER_ATTEMPTS = 2;
 
-function resolveValidModel(rawModel?: string): string {
+export interface GroqChatOptions extends ChatResponseOptions {
+  _attemptedModels?: string[];
+}
+
+export function resolveValidModel(rawModel?: string): string {
   if (!rawModel) return DEFAULT_RECOMMENDED_MODEL;
   const m = rawModel.trim().toLowerCase();
   if (m.includes("llama-3") || m.includes("llama3")) {
@@ -53,8 +58,8 @@ function resolveValidModel(rawModel?: string): string {
   if (m.includes("qwen")) {
     return "qwen/qwen3.8-27b";
   }
-  if (m.includes("compound")) {
-    return "groq/compound-mini";
+  if (m.includes("gpt-oss") || m.includes("compound")) {
+    return FALLBACK_MODEL;
   }
   return rawModel.trim();
 }
@@ -121,7 +126,7 @@ export class GroqProvider implements AIProvider {
 
   async generateChatResponse(
     messages: AIMessage[],
-    options?: ChatResponseOptions,
+    options?: GroqChatOptions,
   ): Promise<AIResponse> {
     if (!this.apiKey) {
       throw new AppError(
@@ -131,7 +136,10 @@ export class GroqProvider implements AIProvider {
       );
     }
 
+    const attemptedModels = [...(options?._attemptedModels ?? [])];
     let targetModel = resolveValidModel(options?.model ?? this.defaultModel);
+    attemptedModels.push(targetModel);
+
     // Strict safe output token clamping (600 tokens max) to guarantee pre-flight OTPM limits
     const maxTokens = options?.maxTokens ?? 600;
 
@@ -203,19 +211,30 @@ export class GroqProvider implements AIProvider {
       if (!response.ok) {
         const errorMsg = data?.error?.message || `HTTP ${response.status}`;
 
-        // 1. Model not found or deprecated: auto-heal with DEFAULT_RECOMMENDED_MODEL
-        if (
-          (response.status === 404 || errorMsg.toLowerCase().includes("does not exist")) &&
-          targetModel !== DEFAULT_RECOMMENDED_MODEL
-        ) {
-          console.warn(
-            `[GroqProvider] Model "${targetModel}" not found. Auto-recovering with ${DEFAULT_RECOMMENDED_MODEL}...`,
+        // 1. Model not found or deprecated (404)
+        if (response.status === 404 || errorMsg.toLowerCase().includes("does not exist")) {
+          const canFallback =
+            targetModel !== DEFAULT_RECOMMENDED_MODEL &&
+            !attemptedModels.includes(DEFAULT_RECOMMENDED_MODEL) &&
+            attemptedModels.length < MAX_PROVIDER_ATTEMPTS;
+
+          if (canFallback) {
+            console.warn(
+              `[GroqProvider] Model "${targetModel}" not found. Retrying with ${DEFAULT_RECOMMENDED_MODEL}...`,
+            );
+            return this.generateChatResponse(messages, {
+              ...options,
+              model: DEFAULT_RECOMMENDED_MODEL,
+              maxTokens: 600,
+              _attemptedModels: attemptedModels,
+            });
+          }
+
+          throw new AppError(
+            `Requested AI model "${targetModel}" is unavailable`,
+            502,
+            "AI_PROVIDER_ERROR",
           );
-          return this.generateChatResponse(messages, {
-            ...options,
-            model: DEFAULT_RECOMMENDED_MODEL,
-            maxTokens: 600,
-          });
         }
 
         // 2. Request Entity Too Large (413): do NOT retry, throw clear AppError immediately
@@ -232,19 +251,33 @@ export class GroqProvider implements AIProvider {
           );
         }
 
-        // 3. Rate limit (429): seamless fallback retry
+        // 3. Rate limit (429): bounded fallback retry, never cycle back to attempted models
         if (response.status === 429) {
-          const alternateModel =
+          const fallbackCandidate =
             targetModel === DEFAULT_RECOMMENDED_MODEL ? FALLBACK_MODEL : DEFAULT_RECOMMENDED_MODEL;
 
-          console.warn(
-            `[GroqProvider] Error (${response.status}: ${errorMsg}) on ${targetModel}. Seamlessly retrying with ${alternateModel}...`,
+          const canFallback =
+            !attemptedModels.includes(fallbackCandidate) &&
+            attemptedModels.length < MAX_PROVIDER_ATTEMPTS;
+
+          if (canFallback) {
+            console.warn(
+              `[GroqProvider] Rate limit (429: ${errorMsg}) on ${targetModel}. Retrying with fallback model ${fallbackCandidate}...`,
+            );
+            return this.generateChatResponse(messages, {
+              ...options,
+              model: fallbackCandidate,
+              maxTokens: 500,
+              _attemptedModels: attemptedModels,
+            });
+          }
+
+          // No safe fallback available or already attempted
+          throw new AppError(
+            "AI rate limit reached. Please wait a moment before trying again.",
+            429,
+            "RATE_LIMIT_EXCEEDED",
           );
-          return this.generateChatResponse(messages, {
-            ...options,
-            model: alternateModel,
-            maxTokens: 500,
-          });
         }
 
         if (response.status === 401) {
@@ -355,7 +388,7 @@ export class GroqProvider implements AIProvider {
 
   async *generateChatStream(
     messages: AIMessage[],
-    options?: ChatResponseOptions,
+    options?: GroqChatOptions,
     signal?: AbortSignal,
   ): AsyncGenerator<AIStreamChunk, void, unknown> {
     if (!this.apiKey) {
@@ -366,7 +399,10 @@ export class GroqProvider implements AIProvider {
       );
     }
 
+    const attemptedModels = [...(options?._attemptedModels ?? [])];
     let targetModel = resolveValidModel(options?.model ?? this.defaultModel);
+    attemptedModels.push(targetModel);
+
     const maxTokens = options?.maxTokens ?? 600;
 
     const sanitizedMessages = messages.map((m) => {
@@ -469,23 +505,35 @@ export class GroqProvider implements AIProvider {
         errorMsg = errorData?.error?.message || errorMsg;
       } catch {}
 
-      if (
-        (response.status === 404 || errorMsg.toLowerCase().includes("does not exist")) &&
-        targetModel !== DEFAULT_RECOMMENDED_MODEL
-      ) {
-        console.warn(
-          `[GroqProvider] Model "${targetModel}" not found. Auto-recovering stream with ${DEFAULT_RECOMMENDED_MODEL}...`,
+      // 1. Model not found or deprecated (404)
+      if (response.status === 404 || errorMsg.toLowerCase().includes("does not exist")) {
+        const canFallback =
+          targetModel !== DEFAULT_RECOMMENDED_MODEL &&
+          !attemptedModels.includes(DEFAULT_RECOMMENDED_MODEL) &&
+          attemptedModels.length < MAX_PROVIDER_ATTEMPTS;
+
+        if (canFallback) {
+          console.warn(
+            `[GroqProvider] Model "${targetModel}" not found. Retrying stream with ${DEFAULT_RECOMMENDED_MODEL}...`,
+          );
+          yield* this.generateChatStream(
+            messages,
+            {
+              ...options,
+              model: DEFAULT_RECOMMENDED_MODEL,
+              maxTokens: 600,
+              _attemptedModels: attemptedModels,
+            },
+            signal,
+          );
+          return;
+        }
+
+        throw new AppError(
+          `Requested AI model "${targetModel}" is unavailable`,
+          502,
+          "AI_PROVIDER_ERROR",
         );
-        yield* this.generateChatStream(
-          messages,
-          {
-            ...options,
-            model: DEFAULT_RECOMMENDED_MODEL,
-            maxTokens: 600,
-          },
-          signal,
-        );
-        return;
       }
 
       const is413 =
@@ -501,23 +549,38 @@ export class GroqProvider implements AIProvider {
         );
       }
 
+      // 3. Rate limit (429): bounded fallback retry, never cycle back to attempted models
       if (response.status === 429) {
-        const alternateModel =
+        const fallbackCandidate =
           targetModel === DEFAULT_RECOMMENDED_MODEL ? FALLBACK_MODEL : DEFAULT_RECOMMENDED_MODEL;
 
-        console.warn(
-          `[GroqProvider] Error (${response.status}: ${errorMsg}) on ${targetModel}. Seamlessly retrying stream with ${alternateModel}...`,
+        const canFallback =
+          !attemptedModels.includes(fallbackCandidate) &&
+          attemptedModels.length < MAX_PROVIDER_ATTEMPTS;
+
+        if (canFallback) {
+          console.warn(
+            `[GroqProvider] Rate limit (429: ${errorMsg}) on ${targetModel}. Retrying stream with fallback model ${fallbackCandidate}...`,
+          );
+          yield* this.generateChatStream(
+            messages,
+            {
+              ...options,
+              model: fallbackCandidate,
+              maxTokens: 500,
+              _attemptedModels: attemptedModels,
+            },
+            signal,
+          );
+          return;
+        }
+
+        // No safe fallback available or already attempted
+        throw new AppError(
+          "AI rate limit reached. Please wait a moment before trying again.",
+          429,
+          "RATE_LIMIT_EXCEEDED",
         );
-        yield* this.generateChatStream(
-          messages,
-          {
-            ...options,
-            model: alternateModel,
-            maxTokens: 500,
-          },
-          signal,
-        );
-        return;
       }
 
       if (response.status === 401) {
