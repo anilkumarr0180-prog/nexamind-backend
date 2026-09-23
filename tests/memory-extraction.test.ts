@@ -135,7 +135,27 @@ const runTests = async () => {
     const json1 = await res1.json();
     assert.equal(json1.success, true);
 
-    const factMemory = await Memory.findOne({
+    const waitForMemory = async (filter: any, maxMs = 3000) => {
+      const start = Date.now();
+      while (Date.now() - start < maxMs) {
+        const mem = await Memory.findOne(filter);
+        if (mem) return mem;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return Memory.findOne(filter);
+    };
+
+    const waitForMemoryCount = async (filter: any, expectedCount: number, maxMs = 3000) => {
+      const start = Date.now();
+      while (Date.now() - start < maxMs) {
+        const count = await Memory.countDocuments(filter);
+        if (count === expectedCount) return count;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return Memory.countDocuments(filter);
+    };
+
+    const factMemory = await waitForMemory({
       userId: userAId,
       type: MEMORY_TYPES.FACT,
       status: MEMORY_STATUSES.ACTIVE,
@@ -170,7 +190,7 @@ const runTests = async () => {
       }),
     });
 
-    const prefMemory = await Memory.findOne({
+    const prefMemory = await waitForMemory({
       userId: userAId,
       type: MEMORY_TYPES.PREFERENCE,
       status: MEMORY_STATUSES.ACTIVE,
@@ -204,7 +224,7 @@ const runTests = async () => {
       }),
     });
 
-    const goalMemory = await Memory.findOne({
+    const goalMemory = await waitForMemory({
       userId: userAId,
       type: MEMORY_TYPES.GOAL,
       status: MEMORY_STATUSES.ACTIVE,
@@ -238,7 +258,7 @@ const runTests = async () => {
       }),
     });
 
-    const instMemory = await Memory.findOne({
+    const instMemory = await waitForMemory({
       userId: userAId,
       type: MEMORY_TYPES.INSTRUCTION,
       status: MEMORY_STATUSES.ACTIVE,
@@ -503,10 +523,13 @@ const runTests = async () => {
       }),
     });
 
-    const firstCount = await Memory.countDocuments({
-      userId: userAId,
-      content: duplicateContent,
-    });
+    const firstCount = await waitForMemoryCount(
+      {
+        userId: userAId,
+        content: duplicateContent,
+      },
+      1,
+    );
     assert.equal(firstCount, 1, "Should create initial memory");
 
     // Second insertion with identical candidate
@@ -567,7 +590,7 @@ const runTests = async () => {
       }),
     });
 
-    const userBFact = await Memory.findOne({
+    const userBFact = await waitForMemory({
       userId: userBId,
       content: sharedFact,
       status: MEMORY_STATUSES.ACTIVE,
@@ -606,12 +629,16 @@ const runTests = async () => {
       }),
     });
 
-    const userAMemories = await Memory.find({ userId: userAId });
+    const count = await waitForMemoryCount(
+      { userId: userAId },
+      env.AI_MAX_EXTRACTED_MEMORIES_PER_CHAT,
+    );
     assert.equal(
-      userAMemories.length,
+      count,
       env.AI_MAX_EXTRACTED_MEMORIES_PER_CHAT,
       `Should cap extracted memories to ${env.AI_MAX_EXTRACTED_MEMORIES_PER_CHAT}`,
     );
+    const userAMemories = await Memory.find({ userId: userAId });
     assert.ok(userAMemories.some((m) => m.content === "Limit Candidate 1"));
     assert.ok(userAMemories.some((m) => m.content === "Limit Candidate 2"));
     assert.ok(userAMemories.some((m) => m.content === "Limit Candidate 3"));

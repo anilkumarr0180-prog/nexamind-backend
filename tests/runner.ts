@@ -72,6 +72,16 @@ const TEST_SUITES: TestSuite[] = [
     file: "conversation-summary.test.ts",
   },
   {
+    id: "conversation-continuity",
+    name: "Chat UX Batch 4b: Cross-Conversation Continuity",
+    file: "conversation-continuity.test.ts",
+  },
+  {
+    id: "persistent-memory-integration",
+    name: "Phase 6: Final Persistent Memory Integration & Hardening",
+    file: "persistent-memory-integration.test.ts",
+  },
+  {
     id: "ai-orchestrator",
     name: "AI Orchestrator & F14 Canonical Route",
     file: "ai-orchestrator.test.ts",

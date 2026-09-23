@@ -147,3 +147,29 @@ export const updateConversationSummary = async (
     { returnDocument: "after" },
   );
 };
+
+export const findRecentSummarizedConversationsByUserId = async (
+  userId: string | Types.ObjectId,
+  excludeConversationId?: string | Types.ObjectId,
+  limit: number = 50,
+) => {
+  if (!userId) {
+    return [];
+  }
+
+  const query: Record<string, unknown> = {
+    userId,
+    deletedAt: null,
+    summary: { $exists: true, $ne: null, $nin: ["", null] },
+  };
+
+  if (excludeConversationId) {
+    query._id = { $ne: excludeConversationId };
+  }
+
+  return Conversation.find(query)
+    .sort({ summaryUpdatedAt: -1, updatedAt: -1 })
+    .limit(limit)
+    .select("_id userId title summary summaryUpdatedAt updatedAt deletedAt")
+    .lean();
+};

@@ -52,7 +52,7 @@ class MockSummaryAIProvider implements AIProvider {
         throw new AppError("Simulated summarization failure", 502, "AI_PROVIDER_ERROR");
       }
       return {
-        content: "- Discussed building NexaMind microservices.\n- Completed MongoDB schema and JWT authentication.\n- Left off at writing role-based access control tests.",
+        content: "- Discussed building NexaMind microservices.\n- Completed MongoDB schema and JWT authentication.\n- Left off at writing role-based access control tests.\n- Next step: Implement RBAC middleware and controller guards.",
         provider: "mock-summary-ai",
         model: "mock-model",
         usage: { inputTokens: 40, outputTokens: 30, totalTokens: 70 },
@@ -166,7 +166,9 @@ const runTests = async () => {
     const summaryResult = await summaryService.summarizeConversation(conv1Id, userAId, mockProvider);
     assert.ok(summaryResult, "Summary must be successfully produced");
     assert.ok(summaryResult.includes("NexaMind microservices"), "Summary must contain key topics");
+    assert.ok(summaryResult.includes("Completed MongoDB schema"), "Summary must contain completed items");
     assert.ok(summaryResult.includes("Left off at"), "Summary must contain where things left off");
+    assert.ok(summaryResult.includes("Next step:"), "Summary must contain next step");
 
     const savedConv1 = await Conversation.findById(conv1Id);
     assert.equal(savedConv1?.summary, summaryResult);
@@ -212,6 +214,17 @@ const runTests = async () => {
     assert.ok(
       summaryPromptMessages.some((m) => m.content.includes("Previous conversation summary:")),
       "Summarization prompt must include previous summary for incremental context",
+    );
+    // Verify that incremental update ONLY sends new dialogue turns and omits already-summarized turns 1-3
+    const userPromptMsg = summaryPromptMessages.find((m) => m.role === "user");
+    assert.ok(userPromptMsg, "Summarization prompt must contain user message");
+    assert.ok(
+      userPromptMsg.content.includes("User turn 4: Refactoring tests for module 4"),
+      "Incremental prompt must include new turn 4",
+    );
+    assert.ok(
+      !userPromptMsg.content.includes("User turn 1: Discussing architectural task 1"),
+      "Incremental prompt must NOT reprocess already summarized turn 1",
     );
     console.log("✓ Test 2 Passed: Incremental summary updated atomically with previous context");
 

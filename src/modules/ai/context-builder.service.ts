@@ -3,6 +3,7 @@ import { env } from "../../config/env.js";
 import { MESSAGE_ROLES } from "../messages/message.model.js";
 import * as messageRepository from "../messages/message.repository.js";
 import * as conversationRepository from "../conversations/conversation.repository.js";
+import * as conversationContinuityService from "../conversations/conversation-continuity.service.js";
 import * as memoryService from "../memory/memory.service.js";
 import type { AIMessage } from "./providers/ai-provider.interface.js";
 export { NEXAMIND_CHAT_SYSTEM_PROMPT } from "./prompts/system.prompt.js";
@@ -95,14 +96,40 @@ export const buildFullChatContext = async (
     memoryContext = null;
   }
 
+  // 3b. Fetch cross-conversation continuity context if user query requests continuity
+  let continuityContext: string | null = null;
+  if (effectiveQuery) {
+    try {
+      continuityContext =
+        await conversationContinuityService.getContinuityContextForUser({
+          userId: options.userId,
+          currentConversationId: options.conversationId,
+          userQuery: effectiveQuery,
+        });
+    } catch (continuityErr) {
+      console.warn(
+        "Non-fatal error retrieving continuity context for context builder:",
+        continuityErr,
+      );
+      continuityContext = null;
+    }
+  }
+
   // 4. Combine metadata sections deterministically:
-  // Order: Relevant user memories -> Conversation summary
+  // Order: Relevant user memories -> Previous conversation context (continuity) -> Current conversation summary
   const contextSections: string[] = [];
   if (memoryContext && memoryContext.trim()) {
     contextSections.push(memoryContext.trim());
   }
+  if (continuityContext && continuityContext.trim()) {
+    contextSections.push(continuityContext.trim());
+  }
   if (conversationSummary && conversationSummary.trim()) {
-    contextSections.push(`Conversation summary:\n${conversationSummary.trim()}`);
+    const trimmedSummary = conversationSummary.trim();
+    // Prevent duplicate conversation summaries from being added to the AI context
+    if (!continuityContext || !continuityContext.includes(trimmedSummary)) {
+      contextSections.push(`Conversation summary:\n${trimmedSummary}`);
+    }
   }
   const combinedMetadata =
     contextSections.length > 0 ? contextSections.join("\n\n") : null;

@@ -311,8 +311,8 @@ export const getSemanticMemoryContextForUser = async (
       );
 
       if (results.length > 0) {
-        const memoryLines = results.map(
-          (mem) => `- [${mem.type}] ${mem.content.trim()}`,
+        const memoryLines = Array.from(
+          new Set(results.map((mem) => `- [${mem.type}] ${mem.content.trim()}`)),
         );
         return `Relevant user memories:\n${memoryLines.join("\n")}\n(Note: The above memories are persistent user facts from past sessions; do not claim they were mentioned in this conversation unless discussed in the current dialogue.)`;
       }
@@ -337,8 +337,8 @@ export const getSemanticMemoryContextForUser = async (
       );
 
     if (textResults.length > 0) {
-      const memoryLines = textResults.map(
-        (mem) => `- [${mem.type}] ${mem.content.trim()}`,
+      const memoryLines = Array.from(
+        new Set(textResults.map((mem) => `- [${mem.type}] ${mem.content.trim()}`)),
       );
       return `Relevant user memories:\n${memoryLines.join("\n")}\n(Note: The above memories are persistent user facts from past sessions; do not claim they were mentioned in this conversation unless discussed in the current dialogue.)`;
     }

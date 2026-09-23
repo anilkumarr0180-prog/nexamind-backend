@@ -29,6 +29,6 @@ export const updateLastLoginAt = async (userId: string) => {
   return User.findByIdAndUpdate(
     userId,
     { lastLoginAt: new Date() },
-    { new: true },
+    { returnDocument: "after" },
   );
 };

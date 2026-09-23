@@ -9,9 +9,9 @@ const startServer = async (): Promise<void> => {
   try {
     await connectDatabase();
 
-    const server = app.listen(env.PORT, () => {
+    const server = app.listen(env.PORT, "0.0.0.0", () => {
       console.log(
-        `NexaMind API running on http://localhost:${env.PORT}`,
+        `NexaMind API running on http://0.0.0.0:${env.PORT}`,
       );
     });
 
