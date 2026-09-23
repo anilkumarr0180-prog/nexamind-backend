@@ -142,6 +142,11 @@ const TEST_SUITES: TestSuite[] = [
     file: "groq-413-streaming.test.ts",
   },
   {
+    id: "groq-retry-bounded",
+    name: "AI Provider: Groq Bounded Retry & Anti-Recursion",
+    file: "groq-retry-bounded.test.ts",
+  },
+  {
     id: "agent-tool-executor",
     name: "Agent Core: Tool Executor",
     file: "agent-tool-executor.test.ts",
