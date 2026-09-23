@@ -13,11 +13,17 @@ export const MAX_SUMMARY_CHARS = 1500;
 
 export const SUMMARIZATION_SYSTEM_PROMPT = `You are a conversation summarization system for NexaMind AI.
 Your task is to produce a concise, structured summary of the conversation so far.
-The summary will be used as context for future turns so the assistant knows what has been discussed, what technical decisions were made, and where things were left off.
+The summary will be used as context for future turns so the assistant knows what has been discussed, what technical decisions were made, where things were left off, and what the immediate next step is.
+
+Structure the summary to consistently capture:
+1. What the conversation is about: High-level overview of the user's primary goal, topic, or architectural focus.
+2. What was completed: Key technical decisions, implementations, answers provided, or milestones accomplished.
+3. Where we stopped: Exact current state of progress and where the discussion or work left off.
+4. Next step: Immediate next action, pending question, or recommended next implementation step.
 
 Rules:
 1. Focus ONLY on topics and decisions actively discussed by the user in this conversation, technical decisions made, code/architecture discussed, user goals, and current progress. Do not incorporate background user preferences, facts, or technologies merely cited by the assistant unless actively discussed in this dialogue.
-2. Explicitly note what was being worked on and where the conversation left off.
+2. Explicitly cover all 4 areas: what the conversation is about, what was completed, where we stopped, and the next step.
 3. Keep the summary concise (under 250 words / 1500 characters).
 4. Do NOT include filler, conversational pleasantries, internal IDs, or secrets.
 5. Write in clear, structured bullet points.`;
@@ -64,13 +70,56 @@ export const summarizeConversation = async (
       return null;
     }
 
-    // Fetch completed messages in chronological order
-    const messages = await Message.find({
+    const lastSummarized = conversation.lastSummarizedMessageCount ?? 0;
+
+    // Fetch total count of completed messages for this conversation
+    const totalCompletedCount = await Message.countDocuments({
+      conversationId: conversation._id,
+      status: MESSAGE_STATUSES.COMPLETED,
+    });
+
+    if (totalCompletedCount === 0) {
+      return null;
+    }
+
+    // Determine if incremental update is applicable:
+    // Requires an existing summary, a positive lastSummarizedMessageCount,
+    // and totalCompletedCount >= lastSummarizedMessageCount.
+    const isIncremental = Boolean(
+      conversation.summary &&
+      conversation.summary.trim().length > 0 &&
+      lastSummarized > 0 &&
+      totalCompletedCount >= lastSummarized,
+    );
+
+    // If incremental and no new completed messages have arrived, return existing summary safely
+    if (isIncremental && totalCompletedCount === lastSummarized) {
+      return conversation.summary ?? null;
+    }
+
+    // Fetch messages to summarize:
+    // In incremental mode, skip previously summarized messages and fetch only new dialogue turns.
+    // Otherwise, fetch all completed messages.
+    let messages = await Message.find({
       conversationId: conversation._id,
       status: MESSAGE_STATUSES.COMPLETED,
     })
       .sort({ createdAt: 1 })
+      .skip(isIncremental ? lastSummarized : 0)
       .lean();
+
+    // Fallback: if incremental skip yielded no messages but totalCompletedCount > 0, fetch all completed messages
+    if (messages.length === 0) {
+      if (isIncremental && conversation.summary) {
+        return conversation.summary ?? null;
+      }
+      messages = await Message.find({
+        conversationId: conversation._id,
+        status: MESSAGE_STATUSES.COMPLETED,
+      })
+        .sort({ createdAt: 1 })
+        .lean();
+    }
 
     if (messages.length === 0) {
       return null;
@@ -96,15 +145,15 @@ export const summarizeConversation = async (
       },
     ];
 
-    if (conversation.summary) {
+    if (isIncremental && conversation.summary) {
       promptMessages.push({
         role: "user",
-        content: `Previous conversation summary:\n${conversation.summary}\n\nNew dialogue turns to incorporate into an updated summary:\n${formattedTranscript}\n\nPlease generate an updated, concise summary preserving key context and where we left off.`,
+        content: `Previous conversation summary:\n${conversation.summary}\n\nNew dialogue turns to incorporate into an updated summary:\n${formattedTranscript}\n\nPlease generate an updated, concise summary preserving key context. Ensure the summary consistently captures:\n- What the conversation is about\n- What was completed\n- Where we stopped\n- Next step`,
       });
     } else {
       promptMessages.push({
         role: "user",
-        content: `Please summarize the following conversation dialogue turns into a concise summary:\n\n${formattedTranscript}`,
+        content: `Please summarize the following conversation dialogue turns into a concise summary capturing:\n- What the conversation is about\n- What was completed\n- Where we stopped\n- Next step\n\nDialogue turns:\n${formattedTranscript}`,
       });
     }
 
@@ -125,7 +174,7 @@ export const summarizeConversation = async (
       conversation._id,
       userIdStr,
       cleanSummary,
-      messages.length,
+      totalCompletedCount,
     );
 
     return cleanSummary;
