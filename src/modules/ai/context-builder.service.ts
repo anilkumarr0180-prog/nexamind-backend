@@ -17,6 +17,7 @@ export interface BuildFullChatContextOptions {
   maxMessages?: number | undefined;
   maxChars?: number | undefined;
   recentMessagesWithSummary?: number | undefined;
+  leafMessageId?: string | Types.ObjectId | null;
 }
 
 export const buildFullChatContext = async (
@@ -56,6 +57,7 @@ export const buildFullChatContext = async (
   const recentMessages = await messageRepository.findRecentMessagesForContext(
     options.conversationId,
     effectiveMaxMessages,
+    options.leafMessageId,
   );
 
   if (recentMessages.length === 0) {

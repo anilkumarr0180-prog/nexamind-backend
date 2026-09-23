@@ -27,6 +27,8 @@ export type CreateMessageData = {
   model?: string | null;
   provider?: string | null;
   usage?: MessageUsage | null;
+  parentMessageId?: string | Types.ObjectId | null;
+  originalMessageId?: string | Types.ObjectId | null;
 };
 
 export const createMessage = async (data: CreateMessageData) => {
@@ -84,17 +86,70 @@ export const updateMessageStatus = async (
   );
 };
 
-export const findRecentMessagesForContext = async (
+export const findActiveBranchMessages = async (
   conversationId: string | Types.ObjectId,
-  limit: number,
+  leafMessageId?: string | Types.ObjectId | null,
+  limit?: number,
 ) => {
-  const docs = await Message.find({
+  const messages = await Message.find({
     conversationId,
     status: MESSAGE_STATUSES.COMPLETED,
   })
-    .sort({ createdAt: -1, _id: -1 })
-    .limit(limit);
+    .sort({ createdAt: 1 })
+    .lean();
 
-  return docs.reverse();
+  if (messages.length === 0) {
+    return [];
+  }
+
+  const hasAnyParent = messages.some((m) => m.parentMessageId);
+  if (!hasAnyParent && !leafMessageId) {
+    return typeof limit === "number" && limit > 0 ? messages.slice(-limit) : messages;
+  }
+
+  const msgMap = new Map(messages.map((m) => [m._id.toString(), m]));
+
+  let targetId = leafMessageId
+    ? leafMessageId.toString()
+    : messages[messages.length - 1]!._id.toString();
+  let current = msgMap.get(targetId);
+
+  if (!current) {
+    current = messages[messages.length - 1];
+  }
+
+  const branchMessages: typeof messages = [];
+  const visited = new Set<string>();
+
+  while (current && !visited.has(current._id.toString())) {
+    visited.add(current._id.toString());
+    branchMessages.unshift(current);
+    if (current.parentMessageId) {
+      current = msgMap.get(current.parentMessageId.toString());
+    } else {
+      const legacyBefore = messages.filter(
+        (m) =>
+          !m.parentMessageId &&
+          m.createdAt < current!.createdAt &&
+          !visited.has(m._id.toString()),
+      );
+      if (legacyBefore.length > 0) {
+        branchMessages.unshift(...legacyBefore);
+      }
+      break;
+    }
+  }
+
+  return typeof limit === "number" && limit > 0
+    ? branchMessages.slice(-limit)
+    : branchMessages;
+};
+
+export const findRecentMessagesForContext = async (
+  conversationId: string | Types.ObjectId,
+  limit: number,
+  leafMessageId?: string | Types.ObjectId | null,
+) => {
+  return findActiveBranchMessages(conversationId, leafMessageId, limit);
 };
 
