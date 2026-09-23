@@ -6,6 +6,7 @@ import { AppError } from "../../errors/app.error.js";
 import { CONVERSATION_STATUSES } from "../conversations/conversation.model.js";
 import * as conversationRepository from "../conversations/conversation.repository.js";
 import {
+  Message,
   MESSAGE_ROLES,
   MESSAGE_STATUSES,
 } from "../messages/message.model.js";
@@ -21,11 +22,73 @@ import type {
 import { OllamaProvider } from "./providers/ollama.provider.js";
 import { GroqProvider } from "./providers/groq.provider.js";
 
+const activeGenerations = new Set<string>();
+
+export const isGenerationActiveForConversation = (conversationId: string): boolean => {
+  return activeGenerations.has(conversationId);
+};
+
+export const clearActiveGenerations = (): void => {
+  activeGenerations.clear();
+};
+
+const resolveBranchForChat = async (
+  conversation: any,
+  userId: string,
+  editMessageId?: string,
+): Promise<{
+  parentMessageId: Types.ObjectId | null;
+  originalMessageId: Types.ObjectId | null;
+}> => {
+  if (!editMessageId) {
+    return {
+      parentMessageId: conversation.activeLeafMessageId ?? null,
+      originalMessageId: null,
+    };
+  }
+
+  const origMsg = await messageRepository.findMessageById(editMessageId);
+  if (!origMsg || origMsg.conversationId.toString() !== conversation._id.toString()) {
+    throw new AppError("Message not found", 404, "MESSAGE_NOT_FOUND");
+  }
+
+  if (origMsg.userId.toString() !== userId.toString()) {
+    throw new AppError("You cannot edit another user's message", 403, "FORBIDDEN");
+  }
+
+  if (origMsg.role !== MESSAGE_ROLES.USER) {
+    throw new AppError("Only user messages can be edited and regenerated", 400, "INVALID_MESSAGE_ROLE");
+  }
+
+  if (origMsg.status !== MESSAGE_STATUSES.COMPLETED) {
+    throw new AppError("Only completed messages can be edited", 400, "INVALID_MESSAGE_STATE");
+  }
+
+  let branchParentId: Types.ObjectId | null = (origMsg as any).parentMessageId ?? null;
+  if (!branchParentId) {
+    const prevMsg = await Message.findOne({
+      conversationId: conversation._id,
+      createdAt: { $lt: origMsg.createdAt },
+      status: MESSAGE_STATUSES.COMPLETED,
+    }).sort({ createdAt: -1 });
+
+    if (prevMsg) {
+      branchParentId = prevMsg._id;
+    }
+  }
+
+  return {
+    parentMessageId: branchParentId,
+    originalMessageId: (origMsg as any).originalMessageId ?? origMsg._id,
+  };
+};
+
 export const DEFAULT_CHAT_CREDIT_COST = 1;
 
 export type ChatRequestInput = {
   conversationId: string;
   content: string;
+  editMessageId?: string | undefined;
 };
 
 export type OrchestratedChatResult = {
@@ -35,6 +98,7 @@ export type OrchestratedChatResult = {
     status: string;
     messageCount: number;
     lastMessageAt: Date | null;
+    activeLeafMessageId?: string | null;
   };
   userMessage: {
     id: string;
@@ -42,6 +106,8 @@ export type OrchestratedChatResult = {
     role: string;
     content: string;
     status: string;
+    parentMessageId?: string | null;
+    originalMessageId?: string | null;
     createdAt: Date;
   };
   assistantMessage: {
@@ -52,6 +118,7 @@ export type OrchestratedChatResult = {
     status: string;
     model: string | null;
     provider: string | null;
+    parentMessageId?: string | null;
     usage: {
       inputTokens: number;
       outputTokens: number;
@@ -152,96 +219,114 @@ export const processChatRequest = async (
   input: ChatRequestInput,
   customProvider?: AIProvider,
 ): Promise<OrchestratedChatResult> => {
-  const provider = customProvider ?? defaultProvider;
-
-  // 1. Verify conversation ownership and existence
-  const conversation =
-    await conversationRepository.findConversationByIdAndUserId(
-      input.conversationId,
-      userId,
-    );
-
-  if (!conversation) {
+  if (activeGenerations.has(input.conversationId)) {
     throw new AppError(
-      "Conversation not found",
-      404,
-      "CONVERSATION_NOT_FOUND",
+      "Another AI generation is currently active for this conversation",
+      409,
+      "GENERATION_IN_PROGRESS",
     );
   }
-
-  // 2. Verify conversation status
-  if (conversation.status === CONVERSATION_STATUSES.ARCHIVED) {
-    throw new AppError(
-      "Archived conversations cannot accept new messages",
-      400,
-      "CONVERSATION_ARCHIVED",
-    );
-  }
-
-  if (conversation.status !== CONVERSATION_STATUSES.ACTIVE) {
-    throw new AppError(
-      "Conversation is not active",
-      400,
-      "CONVERSATION_NOT_ACTIVE",
-    );
-  }
-
-  // 3. Validate user message content
-  const trimmedContent = input.content?.trim();
-  if (!trimmedContent) {
-    throw new AppError(
-      "Message content is required",
-      400,
-      "INVALID_INPUT",
-    );
-  }
-
-  // 4. Deduct application credits atomically BEFORE invoking the AI provider
-  await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST);
-
-  let userMessage:
-    | Awaited<ReturnType<typeof messageRepository.createMessage>>
-    | undefined;
-  let assistantMessage:
-    | Awaited<ReturnType<typeof messageRepository.createMessage>>
-    | undefined;
+  activeGenerations.add(input.conversationId);
 
   try {
-    // 5. Persist USER message
-    userMessage = await messageRepository.createMessage({
-      conversationId: conversation._id,
-      userId,
-      role: MESSAGE_ROLES.USER,
-      content: trimmedContent,
-      status: MESSAGE_STATUSES.COMPLETED,
-      model: null,
-      provider: null,
-      usage: null,
-    });
+    const provider = customProvider ?? defaultProvider;
 
-    // 6. Build conversation context messages for AI provider via Context Builder
-    const aiMessages = await buildFullChatContext({
-      userId,
-      conversationId: conversation._id,
-      userQuery: trimmedContent,
-      maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
-      maxChars: env.AI_MAX_CONTEXT_CHARS,
-    });
+    // 1. Verify conversation ownership and existence
+    const conversation =
+      await conversationRepository.findConversationByIdAndUserId(
+        input.conversationId,
+        userId,
+      );
 
-    // 7. Invoke AI Provider
-    const aiResponse = await provider.generateChatResponse(aiMessages);
+    if (!conversation) {
+      throw new AppError(
+        "Conversation not found",
+        404,
+        "CONVERSATION_NOT_FOUND",
+      );
+    }
 
-    // 8. Persist ASSISTANT message
-    assistantMessage = await messageRepository.createMessage({
-      conversationId: conversation._id,
-      userId,
-      role: MESSAGE_ROLES.ASSISTANT,
-      content: aiResponse.content,
-      status: MESSAGE_STATUSES.COMPLETED,
-      model: aiResponse.model,
-      provider: aiResponse.provider,
-      usage: aiResponse.usage,
-    });
+    // 2. Verify conversation status
+    if (conversation.status === CONVERSATION_STATUSES.ARCHIVED) {
+      throw new AppError(
+        "Archived conversations cannot accept new messages",
+        400,
+        "CONVERSATION_ARCHIVED",
+      );
+    }
+
+    if (conversation.status !== CONVERSATION_STATUSES.ACTIVE) {
+      throw new AppError(
+        "Conversation is not active",
+        400,
+        "CONVERSATION_NOT_ACTIVE",
+      );
+    }
+
+    // 3. Validate user message content
+    const trimmedContent = input.content?.trim();
+    if (!trimmedContent) {
+      throw new AppError(
+        "Message content is required",
+        400,
+        "INVALID_INPUT",
+      );
+    }
+
+    // 3b. Resolve branch parent and original message before credit deduction
+    const { parentMessageId: branchParentId, originalMessageId } =
+      await resolveBranchForChat(conversation, userId, input.editMessageId);
+
+    // 4. Deduct application credits atomically BEFORE invoking the AI provider
+    await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+
+    let userMessage:
+      | Awaited<ReturnType<typeof messageRepository.createMessage>>
+      | undefined;
+    let assistantMessage:
+      | Awaited<ReturnType<typeof messageRepository.createMessage>>
+      | undefined;
+
+    try {
+      // 5. Persist USER message
+      userMessage = await messageRepository.createMessage({
+        conversationId: conversation._id,
+        userId,
+        role: MESSAGE_ROLES.USER,
+        content: trimmedContent,
+        status: MESSAGE_STATUSES.COMPLETED,
+        parentMessageId: branchParentId,
+        originalMessageId,
+        model: null,
+        provider: null,
+        usage: null,
+      });
+
+      // 6. Build conversation context messages for AI provider via Context Builder
+      const aiMessages = await buildFullChatContext({
+        userId,
+        conversationId: conversation._id,
+        userQuery: trimmedContent,
+        maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
+        maxChars: env.AI_MAX_CONTEXT_CHARS,
+        leafMessageId: userMessage._id,
+      });
+
+      // 7. Invoke AI Provider
+      const aiResponse = await provider.generateChatResponse(aiMessages);
+
+      // 8. Persist ASSISTANT message
+      assistantMessage = await messageRepository.createMessage({
+        conversationId: conversation._id,
+        userId,
+        role: MESSAGE_ROLES.ASSISTANT,
+        content: aiResponse.content,
+        status: MESSAGE_STATUSES.COMPLETED,
+        parentMessageId: userMessage._id,
+        model: aiResponse.model,
+        provider: aiResponse.provider,
+        usage: aiResponse.usage,
+      });
   } catch (executionError: unknown) {
     // Compensate / refund deducted credits
     try {
@@ -315,6 +400,7 @@ export const processChatRequest = async (
         {
           lastMessageAt: assistantMessage.createdAt ?? new Date(),
           messageCount: totalMessages,
+          activeLeafMessageId: assistantMessage._id,
         },
       );
   } catch (metadataError) {
@@ -365,6 +451,8 @@ export const processChatRequest = async (
         updatedConversation?.lastMessageAt ??
         assistantMessage.createdAt ??
         new Date(),
+      activeLeafMessageId:
+        (updatedConversation?.activeLeafMessageId ?? assistantMessage._id)?.toString() ?? null,
     },
     userMessage: {
       id: userMessage._id.toString(),
@@ -372,6 +460,8 @@ export const processChatRequest = async (
       role: userMessage.role,
       content: userMessage.content,
       status: userMessage.status,
+      parentMessageId: (userMessage as any).parentMessageId?.toString() ?? null,
+      originalMessageId: (userMessage as any).originalMessageId?.toString() ?? null,
       createdAt: userMessage.createdAt,
     },
     assistantMessage: {
@@ -382,11 +472,15 @@ export const processChatRequest = async (
       status: assistantMessage.status,
       model: assistantMessage.model ?? null,
       provider: assistantMessage.provider ?? null,
+      parentMessageId: (assistantMessage as any).parentMessageId?.toString() ?? null,
       usage: assistantMessage.usage ?? null,
       createdAt: assistantMessage.createdAt,
     },
     usage: assistantMessage.usage ?? null,
   };
+  } finally {
+    activeGenerations.delete(input.conversationId);
+  }
 };
 
 
@@ -398,6 +492,8 @@ export interface ChatStreamCallbacks {
       role: string;
       content: string;
       status: string;
+      parentMessageId?: string | null;
+      originalMessageId?: string | null;
       createdAt: Date;
     };
     conversationId: string;
@@ -412,99 +508,118 @@ export const processChatStream = async (
   signal?: AbortSignal,
   customProvider?: AIProvider,
 ): Promise<OrchestratedChatResult | null> => {
-  const provider = customProvider ?? defaultProvider;
-
-  // 1. Verify conversation ownership and existence
-  const conversation =
-    await conversationRepository.findConversationByIdAndUserId(
-      input.conversationId,
-      userId,
-    );
-
-  if (!conversation) {
+  if (activeGenerations.has(input.conversationId)) {
     throw new AppError(
-      "Conversation not found",
-      404,
-      "CONVERSATION_NOT_FOUND",
+      "Another AI generation is currently active for this conversation",
+      409,
+      "GENERATION_IN_PROGRESS",
     );
   }
-
-  // 2. Verify conversation status
-  if (conversation.status === CONVERSATION_STATUSES.ARCHIVED) {
-    throw new AppError(
-      "Archived conversations cannot accept new messages",
-      400,
-      "CONVERSATION_ARCHIVED",
-    );
-  }
-
-  if (conversation.status !== CONVERSATION_STATUSES.ACTIVE) {
-    throw new AppError(
-      "Conversation is not active",
-      400,
-      "CONVERSATION_NOT_ACTIVE",
-    );
-  }
-
-  // 3. Validate user message content
-  const trimmedContent = input.content?.trim();
-  if (!trimmedContent) {
-    throw new AppError(
-      "Message content is required",
-      400,
-      "INVALID_INPUT",
-    );
-  }
-
-  // 4. Deduct application credits atomically BEFORE invoking the AI provider
-  await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST);
-
-  let userMessage:
-    | Awaited<ReturnType<typeof messageRepository.createMessage>>
-    | undefined;
-  let assistantMessage:
-    | Awaited<ReturnType<typeof messageRepository.createMessage>>
-    | undefined;
-
-  let fullAssistantContent = "";
-  let capturedModel: string | null = null;
-  let capturedUsage: AIUsage | null = null;
-  let streamError: unknown = null;
+  activeGenerations.add(input.conversationId);
 
   try {
-    // 5. Persist USER message
-    userMessage = await messageRepository.createMessage({
-      conversationId: conversation._id,
-      userId,
-      role: MESSAGE_ROLES.USER,
-      content: trimmedContent,
-      status: MESSAGE_STATUSES.COMPLETED,
-      model: null,
-      provider: null,
-      usage: null,
-    });
+    const provider = customProvider ?? defaultProvider;
 
-    // Notify caller that stream has started with the created user message
-    callbacks.onStart?.({
-      userMessage: {
-        id: userMessage._id.toString(),
-        conversationId: userMessage.conversationId.toString(),
-        role: userMessage.role,
-        content: userMessage.content,
-        status: userMessage.status,
-        createdAt: userMessage.createdAt,
-      },
-      conversationId: conversation._id.toString(),
-    });
+    // 1. Verify conversation ownership and existence
+    const conversation =
+      await conversationRepository.findConversationByIdAndUserId(
+        input.conversationId,
+        userId,
+      );
 
-    // 6. Build conversation context messages for AI provider via Context Builder
-    const aiMessages = await buildFullChatContext({
-      userId,
-      conversationId: conversation._id,
-      userQuery: trimmedContent,
-      maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
-      maxChars: env.AI_MAX_CONTEXT_CHARS,
-    });
+    if (!conversation) {
+      throw new AppError(
+        "Conversation not found",
+        404,
+        "CONVERSATION_NOT_FOUND",
+      );
+    }
+
+    // 2. Verify conversation status
+    if (conversation.status === CONVERSATION_STATUSES.ARCHIVED) {
+      throw new AppError(
+        "Archived conversations cannot accept new messages",
+        400,
+        "CONVERSATION_ARCHIVED",
+      );
+    }
+
+    if (conversation.status !== CONVERSATION_STATUSES.ACTIVE) {
+      throw new AppError(
+        "Conversation is not active",
+        400,
+        "CONVERSATION_NOT_ACTIVE",
+      );
+    }
+
+    // 3. Validate user message content
+    const trimmedContent = input.content?.trim();
+    if (!trimmedContent) {
+      throw new AppError(
+        "Message content is required",
+        400,
+        "INVALID_INPUT",
+      );
+    }
+
+    // 3b. Resolve branch parent and original message before credit deduction
+    const { parentMessageId: branchParentId, originalMessageId } =
+      await resolveBranchForChat(conversation, userId, input.editMessageId);
+
+    // 4. Deduct application credits atomically BEFORE invoking the AI provider
+    await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+
+    let userMessage:
+      | Awaited<ReturnType<typeof messageRepository.createMessage>>
+      | undefined;
+    let assistantMessage:
+      | Awaited<ReturnType<typeof messageRepository.createMessage>>
+      | undefined;
+
+    let fullAssistantContent = "";
+    let capturedModel: string | null = null;
+    let capturedUsage: AIUsage | null = null;
+    let streamError: unknown = null;
+
+    try {
+      // 5. Persist USER message
+      userMessage = await messageRepository.createMessage({
+        conversationId: conversation._id,
+        userId,
+        role: MESSAGE_ROLES.USER,
+        content: trimmedContent,
+        status: MESSAGE_STATUSES.COMPLETED,
+        parentMessageId: branchParentId,
+        originalMessageId,
+        model: null,
+        provider: null,
+        usage: null,
+      });
+
+      // Notify caller that stream has started with the created user message
+      callbacks.onStart?.({
+        userMessage: {
+          id: userMessage._id.toString(),
+          conversationId: userMessage.conversationId.toString(),
+          role: userMessage.role,
+          content: userMessage.content,
+          status: userMessage.status,
+          parentMessageId: (userMessage as any).parentMessageId?.toString() ?? null,
+          originalMessageId: (userMessage as any).originalMessageId?.toString() ?? null,
+          createdAt: userMessage.createdAt,
+        },
+        conversationId: conversation._id.toString(),
+      });
+
+      // 6. Build conversation context messages for AI provider via Context Builder
+      const aiMessages = await buildFullChatContext({
+        userId,
+        conversationId: conversation._id,
+        userQuery: trimmedContent,
+        maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
+        maxChars: env.AI_MAX_CONTEXT_CHARS,
+        leafMessageId: userMessage._id,
+      });
 
     // 7. Invoke AI Provider Streaming
     if (typeof provider.generateChatStream !== "function") {
@@ -642,6 +757,7 @@ export const processChatStream = async (
     role: MESSAGE_ROLES.ASSISTANT,
     content: fullAssistantContent,
     status: MESSAGE_STATUSES.COMPLETED,
+    parentMessageId: userMessage._id,
     model: capturedModel ?? (provider.name === "groq" ? "qwen/qwen3.8-27b" : "llama3.2:3b"),
     provider: provider.name,
     usage: fallbackUsage,
@@ -666,6 +782,7 @@ export const processChatStream = async (
         {
           lastMessageAt: assistantMessage.createdAt ?? new Date(),
           messageCount: totalMessages,
+          activeLeafMessageId: assistantMessage._id,
         },
       );
   } catch (metadataError) {
@@ -742,6 +859,8 @@ export const processChatStream = async (
         updatedConversation?.lastMessageAt ??
         assistantMessage.createdAt ??
         new Date(),
+      activeLeafMessageId:
+        (updatedConversation?.activeLeafMessageId ?? assistantMessage._id)?.toString() ?? null,
     },
     userMessage: {
       id: userMessage._id.toString(),
@@ -749,6 +868,8 @@ export const processChatStream = async (
       role: userMessage.role,
       content: userMessage.content,
       status: userMessage.status,
+      parentMessageId: (userMessage as any).parentMessageId?.toString() ?? null,
+      originalMessageId: (userMessage as any).originalMessageId?.toString() ?? null,
       createdAt: userMessage.createdAt,
     },
     assistantMessage: {
@@ -759,9 +880,13 @@ export const processChatStream = async (
       status: assistantMessage.status,
       model: assistantMessage.model ?? null,
       provider: assistantMessage.provider ?? null,
+      parentMessageId: (assistantMessage as any).parentMessageId?.toString() ?? null,
       usage: assistantMessage.usage ?? null,
       createdAt: assistantMessage.createdAt,
     },
     usage: assistantMessage.usage ?? null,
   };
+  } finally {
+    activeGenerations.delete(input.conversationId);
+  }
 };

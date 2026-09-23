@@ -22,6 +22,11 @@ interface SuiteResult {
 
 const TEST_SUITES: TestSuite[] = [
   {
+    id: "edit-regenerate",
+    name: "AI Chat: Edit & Regenerate Non-Destructive Branching",
+    file: "edit-regenerate.test.ts",
+  },
+  {
     id: "billing-checkout",
     name: "Billing: Checkout API Boundary",
     file: "billing-checkout.test.ts",

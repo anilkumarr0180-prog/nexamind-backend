@@ -89,6 +89,20 @@ const messageSchema = new Schema(
       type: messageUsageSchema,
       default: null,
     },
+
+    parentMessageId: {
+      type: Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+      index: true,
+    },
+
+    originalMessageId: {
+      type: Schema.Types.ObjectId,
+      ref: "Message",
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,

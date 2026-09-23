@@ -18,6 +18,7 @@ export type CreateConversationData = {
   summary?: string | null;
   summaryUpdatedAt?: Date | null;
   lastSummarizedMessageCount?: number;
+  activeLeafMessageId?: string | Types.ObjectId | null;
 };
 
 export type UpdateConversationData = {
@@ -29,6 +30,7 @@ export type UpdateConversationData = {
   summary?: string | null;
   summaryUpdatedAt?: Date | null;
   lastSummarizedMessageCount?: number;
+  activeLeafMessageId?: string | Types.ObjectId | null;
 };
 
 export const createConversation = async (data: CreateConversationData) => {

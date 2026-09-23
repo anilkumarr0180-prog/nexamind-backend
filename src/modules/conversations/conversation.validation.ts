@@ -69,6 +69,11 @@ export const updateConversationSchema = z.object({
           CONVERSATION_STATUSES.ARCHIVED,
         ])
         .optional(),
+      activeLeafMessageId: z
+        .string()
+        .regex(objectIdRegex, "Invalid message ID")
+        .nullable()
+        .optional(),
     })
     .strict(),
   query: z.object({}).optional(),
