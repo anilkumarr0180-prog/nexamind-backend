@@ -8,9 +8,27 @@ export const DEFAULT_MAX_CONTINUITY_CONVERSATIONS = 2;
 export const MAX_CONTINUITY_SUMMARY_CHARS = 1500;
 export const MAX_CONTINUITY_CONTEXT_CHARS = 3000;
 
+export const normalizeContinuityText = (text: string): string => {
+  return text
+    .toLowerCase()
+    .replace(/[\x27\x60\u2019]/g, "")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\b(?:remebr|remeber|rember|remembr)\b/g, "remember")
+    .replace(/\b(?:disscusedd|disscus|disscuss)\b/g, "discuss")
+    .replace(/\b(?:disscussed|disscused)\b/g, "discussed")
+    .replace(/\b(?:convo|convos|converstation|conversaton)\b/g, "conversation")
+    .replace(/\b(?:last|past|previous)\s+char\b/g, "$1 chat")
+    .trim();
+};
+
 export const CONTINUITY_PATTERNS: RegExp[] = [
-  /\b(?:do\s+you\s+)?remember\s+(?:what|where)\s+(?:we|i)\b/i,
-  /\bwhat\s+(?:were\s+we|was\s+i|have\s+we\s+been|have\s+i\s+been)\s+(?:working\s+on|doing|building|talking\s+about|discussing)\b/i,
+  /\bremember\b.*\b(?:what|where)\s+(?:we|i)\b/i,
+  /\bremember\b.*\b(?:talking|discussing|working|learning)\b/i,
+  /\bremember\b.*\b(?:last|previous|past|prior)\b/i,
+  /\b(?:do\s+you\s+)?remember\s+(?:our\s+|my\s+|the\s+)?(?:last|previous|past)?\s*(?:conversation|conversations|session|sessions|chat|chats)\b/i,
+  /\brecall\b.*\b(?:conversation|chat|session|last|previous|past|what|where)\b/i,
+  /\bwhat\s+(?:were\s+we|was\s+i|have\s+we\s+been|have\s+i\s+been|did\s+we|are\s+we|we\s+are|we\s+were)\s+(?:working\s+on|doing|building|talking\s+about|discussing|learning)\b/i,
   /\bwhat\s+(?:did\s+(?:we|i)|have\s+we\s+done|have\s+i\s+done)\s+(?:work\s+on|do|build|done)\b/i,
   /\bwhat\s+did\s+(?:we|i)\s+(?:discuss|talk\s+about|cover|decide)\b/i,
   /\bwhere\s+did\s+(?:we|i)\s+(?:stop|leave\s+off|end|finish)\b/i,
@@ -23,16 +41,14 @@ export const CONTINUITY_PATTERNS: RegExp[] = [
   /\bwhat\s+was\s+(?:completed|done|accomplished|finished)\b/i,
   /\bcontinue\s+(?:from\s+)?where\s+(?:we|i)\s+(?:left\s+off|stopped)\b/i,
   /\bpick\s+up\s+(?:from\s+)?where\s+(?:we|i)\s+(?:left\s+off|stopped)\b/i,
-  /\b(?:okay\s*,?\s*|ok\s*,?\s*)?(?:let's|lets|can\s+we|shall\s+we)\s+continue\b/i,
-  /\b(?:let's|lets|can\s+we|shall\s+we)\s+(?:continue|resume|pick\s+up)\b/i,
-  /\bcontinue\s+(?:our\s+)?(?:previous|last|past)\s+(?:work|project|discussion|session)\b/i,
+  /\b(?:okay\s*,?\s*|ok\s*,?\s*)?(?:lets|let\s*s|can\s+we|shall\s+we)\s+continue\b/i,
+  /\b(?:lets|let\s*s|can\s+we|shall\s+we)\s+(?:continue|resume|pick\s+up)\b/i,
+  /\bcontinue\s+(?:our\s+)?(?:previous|last|past)\s+(?:work|project|discussion|session|conversation|chat)\b/i,
+  /\bremind\s+me\s+(?:about\s+)?(?:our|my|the)?\s*(?:last|previous|past)?\s*(?:conversation|conversations|session|sessions|chat|chats)\b/i,
   /\bremind\s+me\s+(?:what|where)\s+(?:we|i)\b/i,
   /\bwhat\s+was\s+(?:our|my|the)\s+last\s+(?:discussion|topic|task|session|work)\b/i,
-  /\b(?:in|from)\s+(?:our|the|my)?\s*(?:previous|last|past)\s+(?:conversation|conversations|session|sessions|chat|chats|convo|convos)\b/i,
-  /\b(?:previous|last|past)\s+(?:conversation|conversations|session|sessions|chat|chats|convo|convos)\b/i,
-  /\b(?:do\s+you\s+)?remember\s+(?:our\s+|my\s+|the\s+)?(?:last|previous|past)?\s*(?:conversation|conversations|session|sessions|chat|chats|convo|convos)\b/i,
-  /\bremind\s+me\s+(?:about\s+)?(?:our|my|the)?\s*(?:last|previous|past)?\s*(?:conversation|conversations|session|sessions|chat|chats|convo|convos)\b/i,
-  /\bremember\s+(?:our|my|the)\s+(?:last|previous|past)\b/i,
+  /\b(?:in|from)\s+(?:our|the|my)?\s*(?:previous|last|past)\s+(?:conversation|conversations|session|sessions|chat|chats)\b/i,
+  /\b(?:previous|last|past)\s+(?:conversation|conversations|session|sessions|chat|chats)\b/i,
   /\b(?:what|where)\s+(?:did\s+(?:we|i)|were\s+we|was\s+i|have\s+we|have\s+i).*\b(?:yesterday|last\s+time|before|previously|earlier|recently|lately)\b/i,
 ];
 
@@ -61,7 +77,10 @@ const CONTINUITY_FRAMING_WORDS = new Set([
   "thing", "things",
   "completed", "complete", "finished", "finish", "accomplished",
   "time", "times", "task", "tasks", "topic", "topics", "plan", "plans",
-  "can", "could", "would", "should", "tell", "say", "please", "the", "a", "an"
+  "can", "could", "would", "should", "tell", "say", "please", "the", "a", "an",
+  "hey", "hi", "hello", "bro", "dude", "assistant", "nexamind", "ai", "bot",
+  "just", "now", "also", "again", "so", "well", "like",
+  "learn", "learned", "learning", "learnign"
 ]);
 
 /**
@@ -69,27 +88,23 @@ const CONTINUITY_FRAMING_WORDS = new Set([
  * conversational phrasing and continuity framing words.
  */
 export const extractTopicKeywords = (query: string): string[] => {
-  const clean = query
-    .toLowerCase()
-    .replace(/[^\w\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const tokens = clean.split(" ").filter((w) => w.length > 1);
+  const norm = normalizeContinuityText(query);
+  const tokens = norm.split(" ").filter((w) => w.length > 1);
   return tokens.filter((t) => !CONTINUITY_FRAMING_WORDS.has(t));
 };
 
 /**
- * Checks if a user's prompt is a cross-conversation continuity request.
+ * Checks if a user\x27s prompt is a cross-conversation continuity request.
  */
 export const isContinuityRequest = (query?: string | null): boolean => {
   if (!query || typeof query !== "string") {
     return false;
   }
-  const trimmed = query.trim().toLowerCase();
-  if (!trimmed) {
+  const normalized = normalizeContinuityText(query);
+  if (!normalized) {
     return false;
   }
-  return CONTINUITY_PATTERNS.some((pattern) => pattern.test(trimmed));
+  return CONTINUITY_PATTERNS.some((pattern) => pattern.test(normalized));
 };
 
 export interface ContinuityContextOptions {
@@ -98,11 +113,12 @@ export interface ContinuityContextOptions {
   userQuery?: string | null | undefined;
   limit?: number | undefined;
   customProvider?: AIProvider | undefined;
+  recentMessages?: Array<{ role: string; content: string }> | undefined;
 }
 
 /**
  * Retrieves and formats the most relevant previous conversation summaries for the user
- * when a continuity request is detected.
+ * when a continuity request is detected or clarified.
  */
 export const getContinuityContextForUser = async (
   options: ContinuityContextOptions,
@@ -113,9 +129,30 @@ export const getContinuityContextForUser = async (
     userQuery,
     limit = DEFAULT_MAX_CONTINUITY_CONVERSATIONS,
     customProvider,
+    recentMessages,
   } = options;
 
-  if (!userId || !isContinuityRequest(userQuery)) {
+  let effectiveContinuity = isContinuityRequest(userQuery);
+
+  // If current prompt is not an explicit continuity request, check if it is a follow-up answer
+  // to a previous continuity inquiry in the same conversation (e.g. user clarifying the topic).
+  if (!effectiveContinuity && recentMessages && recentMessages.length >= 2) {
+    const prevUserMsg = recentMessages[recentMessages.length - 2];
+    const prevAssistantMsg = recentMessages[recentMessages.length - 1];
+
+    const prevUserWasContinuity = prevUserMsg && isContinuityRequest(prevUserMsg.content);
+    const prevAssistantAskedClarification =
+      prevAssistantMsg &&
+      /\b(?:previous\s+conversation|prior\s+conversation|record\s+of|pick\s+up\s+on|which\s+conversation|what\s+topic)\b/i.test(
+        prevAssistantMsg.content,
+      );
+
+    if (prevUserWasContinuity || prevAssistantAskedClarification) {
+      effectiveContinuity = true;
+    }
+  }
+
+  if (!userId || !effectiveContinuity) {
     return null;
   }
 
@@ -308,4 +345,3 @@ export const getContinuityContextForUser = async (
 
   return `Previous conversation context:\n${sections.join("\n\n")}\n\n${instructions}`;
 };
-
