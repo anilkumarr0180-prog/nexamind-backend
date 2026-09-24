@@ -109,6 +109,7 @@ export const buildFullChatContext = async (
           currentConversationId: options.conversationId,
           userQuery: effectiveQuery,
           customProvider: options.customProvider,
+          recentMessages: mappedMessages.slice(0, -1),
         });
     } catch (continuityErr) {
       console.warn(
@@ -130,8 +131,13 @@ export const buildFullChatContext = async (
   }
   if (conversationSummary && conversationSummary.trim()) {
     const trimmedSummary = conversationSummary.trim();
-    // Prevent duplicate conversation summaries from being added to the AI context
-    if (!continuityContext || !continuityContext.includes(trimmedSummary)) {
+    // Prevent duplicate conversation summaries from being added to the AI context.
+    // Also, if continuityContext was retrieved, omit any negative self-poisoned summary claiming no memory
+    const isUncertainSummary =
+      /lacks? (?:memory|record)|does not retain|clarifies lack of memory|state of uncertainty/i.test(
+        trimmedSummary,
+      );
+    if (!continuityContext || (!continuityContext.includes(trimmedSummary) && !isUncertainSummary)) {
       contextSections.push(`Conversation summary:\n${trimmedSummary}`);
     }
   }
