@@ -310,6 +310,7 @@ export const processChatRequest = async (
         maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
         maxChars: env.AI_MAX_CONTEXT_CHARS,
         leafMessageId: userMessage._id,
+        customProvider: provider,
       });
 
       // 7. Invoke AI Provider
@@ -619,6 +620,7 @@ export const processChatStream = async (
         maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
         maxChars: env.AI_MAX_CONTEXT_CHARS,
         leafMessageId: userMessage._id,
+        customProvider: provider,
       });
 
     // 7. Invoke AI Provider Streaming

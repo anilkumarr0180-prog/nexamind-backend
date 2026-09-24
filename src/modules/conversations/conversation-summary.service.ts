@@ -7,7 +7,7 @@ import type {
   AIMessage,
 } from "../ai/providers/ai-provider.interface.js";
 
-export const MIN_MESSAGES_FOR_SUMMARY = 6;
+export const MIN_MESSAGES_FOR_SUMMARY = 2;
 export const SUMMARY_TRIGGER_INTERVAL = 6;
 export const MAX_SUMMARY_CHARS = 1500;
 
@@ -40,6 +40,9 @@ export const shouldSummarizeConversation = (
 ): boolean => {
   if (messageCount < MIN_MESSAGES_FOR_SUMMARY) {
     return false;
+  }
+  if (lastSummarizedMessageCount === 0) {
+    return true;
   }
   return messageCount - lastSummarizedMessageCount >= SUMMARY_TRIGGER_INTERVAL;
 };
