@@ -5,7 +5,7 @@ import * as messageRepository from "../messages/message.repository.js";
 import * as conversationRepository from "../conversations/conversation.repository.js";
 import * as conversationContinuityService from "../conversations/conversation-continuity.service.js";
 import * as memoryService from "../memory/memory.service.js";
-import type { AIMessage } from "./providers/ai-provider.interface.js";
+import type { AIMessage, AIProvider } from "./providers/ai-provider.interface.js";
 export { NEXAMIND_CHAT_SYSTEM_PROMPT } from "./prompts/system.prompt.js";
 
 export const DEFAULT_RECENT_MESSAGES_WITH_SUMMARY = 6;
@@ -18,6 +18,7 @@ export interface BuildFullChatContextOptions {
   maxChars?: number | undefined;
   recentMessagesWithSummary?: number | undefined;
   leafMessageId?: string | Types.ObjectId | null;
+  customProvider?: AIProvider | undefined;
 }
 
 export const buildFullChatContext = async (
@@ -107,6 +108,7 @@ export const buildFullChatContext = async (
           userId: options.userId,
           currentConversationId: options.conversationId,
           userQuery: effectiveQuery,
+          customProvider: options.customProvider,
         });
     } catch (continuityErr) {
       console.warn(

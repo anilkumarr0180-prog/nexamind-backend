@@ -2,6 +2,8 @@ import type { Types } from "mongoose";
 import * as conversationRepository from "./conversation.repository.js";
 import { calculateTextRelevance } from "../memory/memory.repository.js";
 
+import type { AIProvider } from "../ai/providers/ai-provider.interface.js";
+
 export const DEFAULT_MAX_CONTINUITY_CONVERSATIONS = 2;
 export const MAX_CONTINUITY_SUMMARY_CHARS = 1500;
 export const MAX_CONTINUITY_CONTEXT_CHARS = 3000;
@@ -26,8 +28,11 @@ export const CONTINUITY_PATTERNS: RegExp[] = [
   /\bcontinue\s+(?:our\s+)?(?:previous|last|past)\s+(?:work|project|discussion|session)\b/i,
   /\bremind\s+me\s+(?:what|where)\s+(?:we|i)\b/i,
   /\bwhat\s+was\s+(?:our|my|the)\s+last\s+(?:discussion|topic|task|session|work)\b/i,
-  /\b(?:in|from)\s+(?:our|the|my)?\s*(?:previous|last|past)\s+(?:conversation|session|chat)\b/i,
-  /\b(?:previous|last|past)\s+(?:conversation|session|chat)\b/i,
+  /\b(?:in|from)\s+(?:our|the|my)?\s*(?:previous|last|past)\s+(?:conversation|conversations|session|sessions|chat|chats|convo|convos)\b/i,
+  /\b(?:previous|last|past)\s+(?:conversation|conversations|session|sessions|chat|chats|convo|convos)\b/i,
+  /\b(?:do\s+you\s+)?remember\s+(?:our\s+|my\s+|the\s+)?(?:last|previous|past)?\s*(?:conversation|conversations|session|sessions|chat|chats|convo|convos)\b/i,
+  /\bremind\s+me\s+(?:about\s+)?(?:our|my|the)?\s*(?:last|previous|past)?\s*(?:conversation|conversations|session|sessions|chat|chats|convo|convos)\b/i,
+  /\bremember\s+(?:our|my|the)\s+(?:last|previous|past)\b/i,
   /\b(?:what|where)\s+(?:did\s+(?:we|i)|were\s+we|was\s+i|have\s+we|have\s+i).*\b(?:yesterday|last\s+time|before|previously|earlier|recently|lately)\b/i,
 ];
 
@@ -51,7 +56,7 @@ const CONTINUITY_FRAMING_WORDS = new Set([
   "remind",
   "next", "step", "steps",
   "last", "past", "previous", "prior", "recent", "recently", "lately", "latest", "earlier", "before", "previously", "yesterday", "today",
-  "session", "sessions", "conversation", "conversations", "chat", "chats", "convo",
+  "session", "sessions", "conversation", "conversations", "chat", "chats", "convo", "convos",
   "project", "projects",
   "thing", "things",
   "completed", "complete", "finished", "finish", "accomplished",
@@ -89,9 +94,10 @@ export const isContinuityRequest = (query?: string | null): boolean => {
 
 export interface ContinuityContextOptions {
   userId: string | Types.ObjectId;
-  currentConversationId?: string | Types.ObjectId;
-  userQuery?: string | null;
-  limit?: number;
+  currentConversationId?: string | Types.ObjectId | undefined;
+  userQuery?: string | null | undefined;
+  limit?: number | undefined;
+  customProvider?: AIProvider | undefined;
 }
 
 /**
@@ -106,6 +112,7 @@ export const getContinuityContextForUser = async (
     currentConversationId,
     userQuery,
     limit = DEFAULT_MAX_CONTINUITY_CONVERSATIONS,
+    customProvider,
   } = options;
 
   if (!userId || !isContinuityRequest(userQuery)) {
@@ -130,6 +137,47 @@ export const getContinuityContextForUser = async (
       convErr,
     );
     return null;
+  }
+
+  // On-demand summarization fallback: if the user has previous conversations with completed messages
+  // that were not yet summarized (e.g. legacy or short 2-5 message conversations), summarize the most recent one.
+  if (!summarizedConversations || summarizedConversations.length === 0) {
+    try {
+      const { Conversation } = await import("./conversation.model.js");
+      const { summarizeConversation } = await import("./conversation-summary.service.js");
+      const unsummarizedCandidate = await Conversation.findOne({
+        userId,
+        deletedAt: null,
+        messageCount: { $gte: 2 },
+        ...(currentConversationId ? { _id: { $ne: currentConversationId } } : {}),
+      }).sort({ updatedAt: -1 });
+
+      if (unsummarizedCandidate) {
+        const summary = await summarizeConversation(
+          unsummarizedCandidate._id,
+          userId,
+          customProvider,
+        );
+        if (summary) {
+          summarizedConversations = [
+            {
+              _id: unsummarizedCandidate._id,
+              userId: unsummarizedCandidate.userId,
+              title: unsummarizedCandidate.title,
+              summary,
+              summaryUpdatedAt: new Date(),
+              updatedAt: unsummarizedCandidate.updatedAt,
+              deletedAt: null,
+            } as any,
+          ];
+        }
+      }
+    } catch (fallbackErr) {
+      console.warn(
+        "Non-fatal error in on-demand summarization fallback for continuity:",
+        fallbackErr,
+      );
+    }
   }
 
   if (!summarizedConversations || summarizedConversations.length === 0) {
