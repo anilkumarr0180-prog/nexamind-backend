@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { AppError } from "../../errors/app.error.js";
 import { agentService, AgentService } from "./agent.service.js";
 import { AGENT_STATUSES } from "./agent.types.js";
+import * as tokenService from "../tokens/token.service.js";
 import type { ExecuteAgentBody } from "./agent.validation.js";
 
 let defaultService: AgentService = agentService;
@@ -31,19 +32,37 @@ export const handleExecuteAgent = async (
 
   const { task, conversationId, systemPrompt, maxSteps, context } = req.body;
 
-  const result = await defaultService.execute({
-    userId,
-    task,
-    conversationId,
-    systemPrompt,
-    maxSteps,
-    context,
-  });
+  await tokenService.deductCredits(userId, 1);
+  try {
+    const result = await defaultService.execute({
+      userId,
+      task,
+      conversationId,
+      systemPrompt,
+      maxSteps,
+      context,
+    });
 
-  res.status(200).json({
-    success: true,
-    data: result,
-  });
+    if (result.status === AGENT_STATUSES.FAILED && !result.output) {
+      try {
+        await tokenService.refundCredits(userId, 1);
+      } catch (refundErr) {
+        console.error("Refund failed on agent execution failure:", refundErr);
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    try {
+      await tokenService.refundCredits(userId, 1);
+    } catch (refundErr) {
+      console.error("Refund failed on agent execution error:", refundErr);
+    }
+    throw error;
+  }
 };
 
 export const handleExecuteAgentStream = async (
@@ -77,6 +96,7 @@ export const handleExecuteAgentStream = async (
     }
   };
 
+  await tokenService.deductCredits(userId, 1);
   try {
     const result = await defaultService.executeStream(
       {
@@ -119,8 +139,22 @@ export const handleExecuteAgentStream = async (
     sendHeaders();
     if (!res.writableEnded) {
       if (abortController.signal.aborted || result.status === AGENT_STATUSES.CANCELLED) {
+        if (!result.output) {
+          try {
+            await tokenService.refundCredits(userId, 1);
+          } catch (refundErr) {
+            console.error("Refund failed on agent stream abort:", refundErr);
+          }
+        }
         res.write(`data: ${JSON.stringify({ type: "aborted", data: result })}\n\n`);
       } else if (result.status === AGENT_STATUSES.FAILED) {
+        if (!result.output) {
+          try {
+            await tokenService.refundCredits(userId, 1);
+          } catch (refundErr) {
+            console.error("Refund failed on agent stream failure:", refundErr);
+          }
+        }
         res.write(
           `data: ${JSON.stringify({
             type: "error",
@@ -138,6 +172,11 @@ export const handleExecuteAgentStream = async (
       res.end();
     }
   } catch (error: unknown) {
+    try {
+      await tokenService.refundCredits(userId, 1);
+    } catch (refundErr) {
+      console.error("Refund failed on agent stream error:", refundErr);
+    }
     if (res.headersSent || headersSent) {
       if (!res.writableEnded) {
         const statusCode = error instanceof AppError ? error.statusCode : 502;

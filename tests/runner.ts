@@ -22,6 +22,21 @@ interface SuiteResult {
 
 const TEST_SUITES: TestSuite[] = [
   {
+    id: "message-attachment",
+    name: "Messages: Step 4 Attachments on User Messages",
+    file: "message-attachment.test.ts",
+  },
+  {
+    id: "attachment-upload-api",
+    name: "Attachments: Step 2 Secure Image Upload API",
+    file: "attachment-upload-api.test.ts",
+  },
+  {
+    id: "attachment-foundation",
+    name: "Attachments: Step 1 Backend Foundation & Cloudinary",
+    file: "attachment-foundation.test.ts",
+  },
+  {
     id: "edit-regenerate",
     name: "AI Chat: Edit & Regenerate Non-Destructive Branching",
     file: "edit-regenerate.test.ts",
@@ -157,6 +172,16 @@ const TEST_SUITES: TestSuite[] = [
     file: "agent-calculator-tool.test.ts",
   },
   {
+    id: "agent-datetime-tool",
+    name: "Agent Core: DateTime Tool",
+    file: "agent-datetime-tool.test.ts",
+  },
+  {
+    id: "agent-unit-conversion-tool",
+    name: "Agent Core: Unit Conversion Tool",
+    file: "agent-unit-conversion-tool.test.ts",
+  },
+  {
     id: "agent-loop",
     name: "Agent Core: Agent Loop",
     file: "agent-loop.test.ts",
@@ -185,6 +210,46 @@ const TEST_SUITES: TestSuite[] = [
     id: "agent-streaming",
     name: "Agent Core: Streaming & Stop Agent",
     file: "agent-streaming.test.ts",
+  },
+  {
+    id: "normal-chat-tools",
+    name: "Agent Core: Normal Chat Tool Execution Integration",
+    file: "normal-chat-tools.test.ts",
+  },
+  {
+    id: "ai-vision",
+    name: "AI Vision: Multimodal Image Integration",
+    file: "ai-vision.test.ts",
+  },
+  {
+    id: "persisted-image",
+    name: "Messages: Step 6 Persisted Image Rendering",
+    file: "persisted-image.test.ts",
+  },
+  {
+    id: "attachment-lifecycle",
+    name: "Attachments: Step 7 Lifecycle Cleanup",
+    file: "attachment-lifecycle.test.ts",
+  },
+  {
+    id: "document-upload",
+    name: "Attachments: Step 8 Document Upload",
+    file: "document-upload.test.ts",
+  },
+  {
+    id: "document-chat-context",
+    name: "AI Context: Step 9 Document Chat Context",
+    file: "document-chat-context.test.ts",
+  },
+  {
+    id: "pdf-document",
+    name: "Attachments: Step 11 PDF Document Support",
+    file: "pdf-document.test.ts",
+  },
+  {
+    id: "docx-document",
+    name: "Attachments: Step 12 DOCX Document Support",
+    file: "docx-document.test.ts",
   },
 ];
 

@@ -84,3 +84,25 @@ export const getMessageById = async (
     data: message,
   });
 };
+
+
+export const deleteMessage = async (
+  req: Request<{ messageId: string }>,
+  res: Response,
+): Promise<void> => {
+  const authUser = req.user;
+  if (!authUser) {
+    throw new AppError("Authentication required", 401, "UNAUTHORIZED");
+  }
+
+  const { messageId } = req.params;
+  const result = await messageService.deleteMessage(
+    messageId,
+    authUser.userId,
+  );
+
+  res.status(200).json({
+    success: true,
+    data: result,
+  });
+};

@@ -9,6 +9,7 @@ export interface ToolCall {
 export type AIMessage = {
   role: AIMessageRole;
   content: string;
+  imageUrl?: string | undefined;
   toolCallId?: string | undefined;
   toolCalls?: ToolCall[] | undefined;
   name?: string | undefined;

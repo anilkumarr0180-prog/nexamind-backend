@@ -54,6 +54,7 @@ export interface AgentTool<TInput = Record<string, unknown>, TOutput = unknown>
   readonly description: string;
   readonly schema: ToolInputSchema;
   readonly parameters?: ToolInputSchema | undefined;
+  matchesQuery?(query: string): boolean;
   execute(
     input: TInput,
     context?: ToolExecutionContext | undefined,

@@ -422,6 +422,7 @@ const runTests = async () => {
     // -------------------------------------------------------------
     console.log("\n[Test 11] Testing normal chat works when user has 0 memories...");
     await Memory.deleteMany({ userId: userBId });
+    await Conversation.updateOne({ _id: convBId }, { $set: { summary: null } });
     const noMemRes = await fetch(`${baseUrl}/api/v1/ai/chat`, {
       method: "POST",
       headers: {

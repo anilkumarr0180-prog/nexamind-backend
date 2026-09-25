@@ -18,6 +18,8 @@ import {
 } from "./agent.loop.js";
 import { ToolRegistry } from "./tool.registry.js";
 import "./tools/calculator.tool.js";
+import "./tools/datetime.tool.js";
+import "./tools/unit-conversion.tool.js";
 import { ToolExecutor } from "./tool.executor.js";
 import { buildFullChatContext } from "../ai/context-builder.service.js";
 import * as conversationRepository from "../conversations/conversation.repository.js";

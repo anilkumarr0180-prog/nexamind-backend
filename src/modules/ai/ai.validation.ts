@@ -20,6 +20,11 @@ export const chatRequestSchema = z.object({
         .string()
         .regex(objectIdRegex, "Invalid message ID")
         .optional(),
+      attachmentId: z
+        .string()
+        .regex(objectIdRegex, "Invalid attachment ID")
+        .nullable()
+        .optional(),
     })
     .strict(),
 });

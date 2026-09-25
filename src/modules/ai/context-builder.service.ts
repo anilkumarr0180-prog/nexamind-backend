@@ -5,10 +5,24 @@ import * as messageRepository from "../messages/message.repository.js";
 import * as conversationRepository from "../conversations/conversation.repository.js";
 import * as conversationContinuityService from "../conversations/conversation-continuity.service.js";
 import * as memoryService from "../memory/memory.service.js";
+import * as attachmentRepository from "../attachments/attachment.repository.js";
+import { ATTACHMENT_STATUSES, ATTACHMENT_TYPES } from "../attachments/attachment.types.js";
 import type { AIMessage, AIProvider } from "./providers/ai-provider.interface.js";
 export { NEXAMIND_CHAT_SYSTEM_PROMPT } from "./prompts/system.prompt.js";
 
 export const DEFAULT_RECENT_MESSAGES_WITH_SUMMARY = 6;
+
+/**
+ * Maximum character budget for attached document text injected into prompt context.
+ * Bounded to prevent document content from overwhelming the LLM context window.
+ */
+export const MAX_DOCUMENT_PROMPT_CHARS = 16000;
+
+export interface DocumentAttachmentContext {
+  originalName: string;
+  mimeType?: string | undefined;
+  extractedText: string;
+}
 
 export interface BuildFullChatContextOptions {
   userId: string | Types.ObjectId;
@@ -19,7 +33,27 @@ export interface BuildFullChatContextOptions {
   recentMessagesWithSummary?: number | undefined;
   leafMessageId?: string | Types.ObjectId | null;
   customProvider?: AIProvider | undefined;
+  imageUrl?: string | undefined;
+  documentContext?: DocumentAttachmentContext | undefined;
 }
+
+/**
+ * Safely bounds document text to prevent prompt overflow while providing a clear truncation notice.
+ */
+export const boundDocumentText = (
+  text: string,
+  maxChars: number = MAX_DOCUMENT_PROMPT_CHARS,
+): { boundedText: string; isTruncated: boolean } => {
+  if (text.length <= maxChars) {
+    return { boundedText: text, isTruncated: false };
+  }
+  const truncationNotice = `\n\n[... Document truncated: ${text.length - maxChars} characters omitted for context length limits ...]`;
+  const allowedLength = Math.max(0, maxChars - truncationNotice.length);
+  return {
+    boundedText: `${text.slice(0, allowedLength)}${truncationNotice}`,
+    isTruncated: true,
+  };
+};
 
 export const buildFullChatContext = async (
   options: BuildFullChatContextOptions,
@@ -120,8 +154,47 @@ export const buildFullChatContext = async (
     }
   }
 
+  // 3c. Resolve document attachment context (either passed explicitly or from latest message attachment)
+  let docContext = options.documentContext;
+  if (!docContext && recentMessages.length > 0) {
+    const latestMessageRecord = recentMessages[recentMessages.length - 1];
+    if (latestMessageRecord?.attachmentId) {
+      try {
+        const att = await attachmentRepository.findAttachmentByIdAndUserId(
+          latestMessageRecord.attachmentId,
+          options.userId,
+        );
+        if (
+          att &&
+          att.type === ATTACHMENT_TYPES.DOCUMENT &&
+          att.status === ATTACHMENT_STATUSES.READY &&
+          att.conversationId.toString() === options.conversationId.toString() &&
+          att.extractedText
+        ) {
+          docContext = {
+            originalName: att.originalName,
+            mimeType: att.mimeType,
+            extractedText: att.extractedText,
+          };
+        }
+      } catch (attErr) {
+        console.warn(
+          "Non-fatal error retrieving attachment for context builder:",
+          attErr,
+        );
+      }
+    }
+  }
+
+  let documentSection: string | null = null;
+  if (docContext && docContext.extractedText && docContext.extractedText.trim().length > 0) {
+    const docBudget = Math.min(MAX_DOCUMENT_PROMPT_CHARS, maxChars);
+    const { boundedText } = boundDocumentText(docContext.extractedText, docBudget);
+    documentSection = `--- Attached Document: ${docContext.originalName} ---\n${boundedText}\n--- End of Attached Document ---`;
+  }
+
   // 4. Combine metadata sections deterministically:
-  // Order: Relevant user memories -> Previous conversation context (continuity) -> Current conversation summary
+  // Order: Relevant user memories -> Previous conversation context (continuity) -> Current conversation summary -> Attached document
   const contextSections: string[] = [];
   if (memoryContext && memoryContext.trim()) {
     contextSections.push(memoryContext.trim());
@@ -141,6 +214,10 @@ export const buildFullChatContext = async (
       contextSections.push(`Conversation summary:\n${trimmedSummary}`);
     }
   }
+  if (documentSection && documentSection.trim()) {
+    contextSections.push(documentSection.trim());
+  }
+
   const combinedMetadata =
     contextSections.length > 0 ? contextSections.join("\n\n") : null;
 
@@ -157,6 +234,7 @@ export const buildFullChatContext = async (
   const finalLatestMessage: AIMessage = {
     role: latestMessage.role,
     content: cappedLatestContent,
+    ...(options.imageUrl ? { imageUrl: options.imageUrl } : {}),
   };
 
   let remainingChars = maxChars - finalLatestMessage.content.length;

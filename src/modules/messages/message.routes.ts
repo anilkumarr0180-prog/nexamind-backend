@@ -30,4 +30,9 @@ router.get(
   messageController.getMessageById,
 );
 
+router.delete(
+  "/messages/:messageId",
+  messageController.deleteMessage,
+);
+
 export default router;

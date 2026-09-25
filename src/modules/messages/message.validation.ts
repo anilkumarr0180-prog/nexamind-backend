@@ -17,6 +17,11 @@ export const createUserMessageSchema = z.object({
         .trim()
         .min(1, "Message content cannot be empty")
         .max(100000, "Message content cannot exceed 100000 characters"),
+      attachmentId: z
+        .string()
+        .regex(objectIdRegex, "Invalid attachment ID")
+        .nullable()
+        .optional(),
     })
     .strict(),
   query: z.object({}).optional(),

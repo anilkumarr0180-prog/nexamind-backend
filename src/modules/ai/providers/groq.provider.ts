@@ -102,11 +102,73 @@ function trimMessagesToBudget(
       const excess = serializedLength - maxBudget;
       const newLen = Math.max(0, lastMsg.content.length - excess);
       lastMsg.content = lastMsg.content.slice(0, newLen);
+    } else if (Array.isArray(lastMsg.content)) {
+      const textItem = (lastMsg.content as Array<{ type: string; text?: string }>).find(
+        (item) => item.type === "text" && typeof item.text === "string",
+      );
+      if (textItem && textItem.text) {
+        const excess = serializedLength - maxBudget;
+        const newLen = Math.max(0, textItem.text.length - excess);
+        textItem.text = textItem.text.slice(0, newLen);
+      }
     }
   }
 
   return result;
 }
+
+export function formatGroqMessages(messages: AIMessage[]): Array<Record<string, unknown>> {
+  const sanitized = messages.map((m) => {
+    let content: unknown = typeof m.content === "string" ? m.content.slice(0, 8000) : "";
+
+    if (m.imageUrl && m.role === "user") {
+      content = [
+        {
+          type: "text",
+          text: typeof m.content === "string" ? m.content.slice(0, 8000) : "",
+        },
+        {
+          type: "image_url",
+          image_url: {
+            url: m.imageUrl,
+          },
+        },
+      ];
+    }
+
+    const msgObj: Record<string, unknown> = {
+      role: m.role,
+      content,
+    };
+
+    if (m.role === "tool" && m.toolCallId) {
+      msgObj.tool_call_id = m.toolCallId;
+    }
+
+    if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
+      msgObj.tool_calls = m.toolCalls.map((tc) => ({
+        id: tc.id,
+        type: "function",
+        function: {
+          name: tc.name,
+          arguments: JSON.stringify(tc.arguments ?? {}),
+        },
+      }));
+    }
+
+    return msgObj;
+  });
+
+  if (!messages.some((m) => m.role === "system")) {
+    sanitized.unshift({
+      role: "system",
+      content: NEXAMIND_CHAT_SYSTEM_PROMPT,
+    });
+  }
+
+  return sanitized;
+}
+
 
 
 export class GroqProvider implements AIProvider {
@@ -143,37 +205,7 @@ export class GroqProvider implements AIProvider {
     // Strict safe output token clamping (600 tokens max) to guarantee pre-flight OTPM limits
     const maxTokens = options?.maxTokens ?? 600;
 
-    // Format and sanitize messages for OpenAI/Groq API compatibility
-    const sanitizedMessages = messages.map((m) => {
-      const msgObj: Record<string, unknown> = {
-        role: m.role,
-        content: typeof m.content === "string" ? m.content.slice(0, 8000) : "",
-      };
-
-      if (m.role === "tool" && m.toolCallId) {
-        msgObj.tool_call_id = m.toolCallId;
-      }
-
-      if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
-        msgObj.tool_calls = m.toolCalls.map((tc) => ({
-          id: tc.id,
-          type: "function",
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments ?? {}),
-          },
-        }));
-      }
-
-      return msgObj;
-    });
-
-    if (!messages.some((m) => m.role === "system")) {
-      sanitizedMessages.unshift({
-        role: "system",
-        content: NEXAMIND_CHAT_SYSTEM_PROMPT,
-      });
-    }
+    const sanitizedMessages = formatGroqMessages(messages);
 
     const budgetedMessages = trimMessagesToBudget(sanitizedMessages);
 
@@ -405,36 +437,7 @@ export class GroqProvider implements AIProvider {
 
     const maxTokens = options?.maxTokens ?? 600;
 
-    const sanitizedMessages = messages.map((m) => {
-      const msgObj: Record<string, unknown> = {
-        role: m.role,
-        content: typeof m.content === "string" ? m.content.slice(0, 8000) : "",
-      };
-
-      if (m.role === "tool" && m.toolCallId) {
-        msgObj.tool_call_id = m.toolCallId;
-      }
-
-      if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
-        msgObj.tool_calls = m.toolCalls.map((tc) => ({
-          id: tc.id,
-          type: "function",
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments ?? {}),
-          },
-        }));
-      }
-
-      return msgObj;
-    });
-
-    if (!messages.some((m) => m.role === "system")) {
-      sanitizedMessages.unshift({
-        role: "system",
-        content: NEXAMIND_CHAT_SYSTEM_PROMPT,
-      });
-    }
+    const sanitizedMessages = formatGroqMessages(messages);
 
     const budgetedMessages = trimMessagesToBudget(sanitizedMessages);
 

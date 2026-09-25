@@ -3,6 +3,8 @@ export * from "./tool.interface.js";
 export * from "./tool.registry.js";
 export * from "./tool.executor.js";
 export * from "./tools/calculator.tool.js";
+export * from "./tools/datetime.tool.js";
+export * from "./tools/unit-conversion.tool.js";
 export * from "./agent.loop.js";
 export * from "./agent.service.js";
 export * from "./agent.validation.js";

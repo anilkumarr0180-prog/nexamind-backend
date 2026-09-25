@@ -29,6 +29,7 @@ export type CreateMessageData = {
   usage?: MessageUsage | null;
   parentMessageId?: string | Types.ObjectId | null;
   originalMessageId?: string | Types.ObjectId | null;
+  attachmentId?: string | Types.ObjectId | null;
 };
 
 export const createMessage = async (data: CreateMessageData) => {
