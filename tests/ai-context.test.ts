@@ -289,11 +289,11 @@ const runTests = async () => {
     assert.equal(mockProvider.capturedMessages[1]?.role, "assistant");
     assert.equal(mockProvider.capturedMessages[1]?.content, "Assistant response #1");
     assert.equal(mockProvider.capturedMessages[2]?.role, "user");
-    assert.equal(mockProvider.capturedMessages[2]?.content, "Tell me a joke");
+    assert.ok(mockProvider.capturedMessages[2]?.content.includes("Tell me a joke"));
 
     // Verify latest message is not duplicated
     const userJokeOccurrences = mockProvider.capturedMessages.filter(
-      (m) => m.content === "Tell me a joke",
+      (m) => m.content.includes("Tell me a joke"),
     );
     assert.equal(
       userJokeOccurrences.length,

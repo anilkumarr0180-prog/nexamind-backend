@@ -50,7 +50,8 @@ export const handleChatStream = async (
     }
   };
 
-  // Listen to response close to detect actual client disconnection (not req body close)
+  // Listen to both request and response close to detect client disconnection at any stage
+  req.on("close", handleDisconnect);
   res.on("close", handleDisconnect);
 
   let headersSent = false;
@@ -75,6 +76,18 @@ export const handleChatStream = async (
           ensureHeaders();
           if (!res.writableEnded) {
             res.write(`data: ${JSON.stringify({ type: "start", ...startData })}\n\n`);
+          }
+        },
+        onStatus: (status, message) => {
+          ensureHeaders();
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: "status", status, message })}\n\n`);
+          }
+        },
+        onToolStatus: (toolStatus) => {
+          ensureHeaders();
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: "tool_status", ...toolStatus })}\n\n`);
           }
         },
         onChunk: (chunk) => {
@@ -120,6 +133,7 @@ export const handleChatStream = async (
     }
   } finally {
     isStreamCompleted = true;
+    req.removeListener("close", handleDisconnect);
     res.removeListener("close", handleDisconnect);
   }
 };

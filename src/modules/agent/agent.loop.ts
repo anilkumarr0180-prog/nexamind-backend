@@ -41,7 +41,7 @@ export interface AgentLoopOptions {
  * and ToolExecutor until a final completion or safe termination condition is met.
  */
 export class AgentLoop {
-  private readonly provider: AIProvider;
+  private customProvider?: AIProvider | undefined;
   private readonly registry: ToolRegistry;
   private readonly executor: ToolExecutor;
 
@@ -50,7 +50,11 @@ export class AgentLoop {
     this.executor =
       options?.executor ??
       (options?.registry ? new ToolExecutor(this.registry) : defaultToolExecutor);
-    this.provider = options?.provider ?? getDefaultProvider();
+    this.customProvider = options?.provider;
+  }
+
+  private get provider(): AIProvider {
+    return this.customProvider ?? getDefaultProvider();
   }
 
   /**

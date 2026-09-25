@@ -82,6 +82,40 @@ export class ToolRegistry {
   }
 
   /**
+   * Checks whether any registered tool is required for the given user query.
+   */
+  public isToolRequired(query: string): boolean {
+    if (!query || typeof query !== "string") {
+      return false;
+    }
+    for (const tool of this.tools.values()) {
+      if (typeof tool.matchesQuery === "function") {
+        if (tool.matchesQuery(query)) {
+          return true;
+        }
+      } else {
+        const toolNameRegex = new RegExp(`\\b${tool.name}\\b`, "i");
+        if (toolNameRegex.test(query)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns declarative tool definitions for all registered tools.
+   */
+  public getToolDefinitions() {
+    return this.list().map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      schema: tool.schema,
+      parameters: tool.parameters ?? tool.schema,
+    }));
+  }
+
+  /**
    * Clears all registered tools from the in-memory registry.
    */
   public clear(): void {
@@ -134,4 +168,12 @@ export const hasTool = (name: string): boolean => {
  */
 export const listTools = (): AgentTool<any, any>[] => {
   return toolRegistry.list();
+};
+
+export const isToolRequired = (query: string): boolean => {
+  return toolRegistry.isToolRequired(query);
+};
+
+export const getToolDefinitions = () => {
+  return toolRegistry.getToolDefinitions();
 };

@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { z } from "zod";
 
-const envSchema = z
+export const envSchema = z
   .object({
     NODE_ENV: z
       .enum(["development", "test", "production"])
@@ -199,6 +199,22 @@ const envSchema = z
       .string()
       .trim()
       .min(1, "POLAR_PRODUCT_PRO_YEARLY is required"),
+
+    // Cloudinary Configuration
+    CLOUDINARY_CLOUD_NAME: z
+      .string()
+      .trim()
+      .min(1, "CLOUDINARY_CLOUD_NAME is required"),
+
+    CLOUDINARY_API_KEY: z
+      .string()
+      .trim()
+      .min(1, "CLOUDINARY_API_KEY is required"),
+
+    CLOUDINARY_API_SECRET: z
+      .string()
+      .trim()
+      .min(1, "CLOUDINARY_API_SECRET is required"),
   })
   .superRefine((data, ctx) => {
     if (

@@ -103,6 +103,13 @@ const messageSchema = new Schema(
       default: null,
       index: true,
     },
+
+    attachmentId: {
+      type: Schema.Types.ObjectId,
+      ref: "Attachment",
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,

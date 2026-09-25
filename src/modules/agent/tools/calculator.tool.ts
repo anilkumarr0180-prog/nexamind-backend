@@ -238,6 +238,29 @@ export class CalculatorTool
   public readonly description =
     "Evaluates mathematical expressions supporting addition (+), subtraction (-), multiplication (*), division (/), modulo (%), and parentheses.";
 
+  /**
+   * Determines if the user query likely requires a calculation.
+   */
+  public matchesQuery(query: string): boolean {
+    if (!query || typeof query !== "string") {
+      return false;
+    }
+    const q = query.trim().toLowerCase();
+    // Keywords indicating mathematical calculation intent
+    if (/\b(calculate|calculator|compute|computations?|eval|evaluate|arithmetic)\b/i.test(q)) {
+      return true;
+    }
+    // Natural language math phrases e.g. "what is 1542 * 38", "how much is 100 / 4"
+    if (/\b(what is|what's|how much is)\s+[\d(]/i.test(q)) {
+      return true;
+    }
+    // Arithmetic patterns e.g. "1542 * 38", "10 / 0", "25 + 75", "(10 + 5) * 2", "50 % 4"
+    if (/\b\d+(?:\.\d+)?\s*[\+\-\*/\%]\s*\d+(?:\.\d+)?\b/.test(q)) {
+      return true;
+    }
+    return false;
+  }
+
   public readonly schema: ToolInputSchema = {
     type: "object",
     properties: {

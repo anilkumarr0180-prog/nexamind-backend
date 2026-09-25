@@ -1,3 +1,4 @@
+import { deleteConversationAttachments } from "../attachments/attachment.service.js";
 import { AppError } from "../../errors/app.error.js";
 import { CONVERSATION_STATUSES } from "./conversation.model.js";
 import * as conversationRepository from "./conversation.repository.js";
@@ -260,6 +261,13 @@ export const deleteConversation = async (
     );
 
   if (conversation) {
+    // Clean up all attachments associated with this conversation
+    try {
+      await deleteConversationAttachments(conversationId, userId);
+    } catch (cleanupErr) {
+      console.warn("[ConversationService] Non-fatal error cleaning attachments for conversation " + conversationId + ":", cleanupErr);
+    }
+
     const deletedConversation =
       await conversationRepository.softDeleteConversation(
         conversationId,

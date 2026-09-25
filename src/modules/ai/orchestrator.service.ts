@@ -13,6 +13,8 @@ import {
 import * as messageRepository from "../messages/message.repository.js";
 import * as tokenService from "../tokens/token.service.js";
 import * as memoryService from "../memory/memory.service.js";
+import { verifyAttachmentForMessage } from "../attachments/attachment.service.js";
+import { type IAttachment, ATTACHMENT_TYPES } from "../attachments/attachment.types.js";
 import type {
   AIProvider,
   AIMessage,
@@ -21,6 +23,9 @@ import type {
 } from "./providers/ai-provider.interface.js";
 import { OllamaProvider } from "./providers/ollama.provider.js";
 import { GroqProvider } from "./providers/groq.provider.js";
+import { toolRegistry } from "../agent/tool.registry.js";
+import { AgentLoop } from "../agent/agent.loop.js";
+import { AGENT_STATUSES, type ToolStatusEvent } from "../agent/agent.types.js";
 
 const activeGenerations = new Set<string>();
 
@@ -89,6 +94,7 @@ export type ChatRequestInput = {
   conversationId: string;
   content: string;
   editMessageId?: string | undefined;
+  attachmentId?: string | null | undefined;
 };
 
 export type OrchestratedChatResult = {
@@ -108,6 +114,8 @@ export type OrchestratedChatResult = {
     status: string;
     parentMessageId?: string | null;
     originalMessageId?: string | null;
+    attachmentId?: string | null;
+    attachment?: Record<string, unknown> | null;
     createdAt: Date;
   };
   assistantMessage: {
@@ -133,6 +141,24 @@ export type OrchestratedChatResult = {
   } | null;
 };
 
+
+const toSafeAttachmentRecord = (att: any) => {
+  if (!att) return null;
+  return {
+    attachmentId: att._id.toString(),
+    type: att.type ?? "IMAGE",
+    originalName: att.originalName,
+    mimeType: att.mimeType,
+    size: att.size,
+    secureUrl: att.secureUrl,
+    status: att.status,
+    width: att.width ?? null,
+    height: att.height ?? null,
+    format: att.format ?? null,
+    extractedTextLength: att.extractedTextLength ?? null,
+  };
+};
+
 const createDefaultProvider = (): AIProvider => {
   if (env.AI_PROVIDER === "groq") {
     return new GroqProvider();
@@ -156,6 +182,12 @@ export const buildConversationContext = async (
   maxMessages: number = env.AI_MAX_CONTEXT_MESSAGES,
   maxChars: number = env.AI_MAX_CONTEXT_CHARS,
   memoryContext?: string | null,
+  imageUrl?: string,
+  documentContext?: {
+    originalName: string;
+    mimeType?: string;
+    extractedText: string;
+  },
 ): Promise<AIMessage[]> => {
   const recentMessages = await messageRepository.findRecentMessagesForContext(
     conversationId,
@@ -193,6 +225,7 @@ export const buildConversationContext = async (
   const finalLatestMessage: AIMessage = {
     role: latestMessage.role,
     content: cappedLatestContent,
+    ...(imageUrl ? { imageUrl } : {}),
   };
 
   let remainingChars = maxChars - finalLatestMessage.content.length;
@@ -277,6 +310,16 @@ export const processChatRequest = async (
     const { parentMessageId: branchParentId, originalMessageId } =
       await resolveBranchForChat(conversation, userId, input.editMessageId);
 
+    // 3c. Verify attachment belongs to user and conversation before credit deduction or persistence
+    let verifiedAttachment: IAttachment | null = null;
+    if (input.attachmentId) {
+      verifiedAttachment = await verifyAttachmentForMessage(
+        input.attachmentId,
+        userId,
+        conversation._id.toString(),
+      );
+    }
+
     // 4. Deduct application credits atomically BEFORE invoking the AI provider
     await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST);
 
@@ -300,6 +343,7 @@ export const processChatRequest = async (
         model: null,
         provider: null,
         usage: null,
+        attachmentId: input.attachmentId ?? null,
       });
 
       // 6. Build conversation context messages for AI provider via Context Builder
@@ -311,10 +355,62 @@ export const processChatRequest = async (
         maxChars: env.AI_MAX_CONTEXT_CHARS,
         leafMessageId: userMessage._id,
         customProvider: provider,
+        imageUrl:
+          verifiedAttachment?.type === ATTACHMENT_TYPES.IMAGE ||
+          (!verifiedAttachment?.type && verifiedAttachment?.secureUrl)
+            ? verifiedAttachment?.secureUrl
+            : undefined,
+        documentContext:
+          verifiedAttachment?.type === ATTACHMENT_TYPES.DOCUMENT &&
+          verifiedAttachment.extractedText
+            ? {
+                originalName: verifiedAttachment.originalName,
+                mimeType: verifiedAttachment.mimeType,
+                extractedText: verifiedAttachment.extractedText,
+              }
+            : undefined,
       });
 
-      // 7. Invoke AI Provider
-      const aiResponse = await provider.generateChatResponse(aiMessages);
+      // 7. Invoke AI Provider or AgentLoop if tools required
+      let aiResponse: AIResponse;
+      const isToolNeeded = toolRegistry.isToolRequired(trimmedContent);
+
+      if (isToolNeeded) {
+        const loop = new AgentLoop({
+          provider,
+          registry: toolRegistry,
+        });
+
+        const agentResult = await loop.run({
+          userId,
+          task: trimmedContent,
+          conversationId: conversation._id.toString(),
+          initialMessages: aiMessages,
+          maxSteps: 10,
+        });
+
+        if (agentResult.status === AGENT_STATUSES.FAILED && !agentResult.output) {
+          throw new AppError(
+            agentResult.error || "AI provider failed to generate response",
+            502,
+            "AI_PROVIDER_ERROR",
+          );
+        }
+
+        aiResponse = {
+          content: agentResult.output || "",
+          provider: provider.name,
+          model: provider.name === "groq" ? "qwen/qwen3.8-27b" : "llama3.2:3b",
+          usage: agentResult.usage,
+          toolCalls: agentResult.toolCalls.map((tc) => ({
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.arguments,
+          })),
+        };
+      } else {
+        aiResponse = await provider.generateChatResponse(aiMessages);
+      }
 
       // 8. Persist ASSISTANT message
       assistantMessage = await messageRepository.createMessage({
@@ -463,6 +559,8 @@ export const processChatRequest = async (
       status: userMessage.status,
       parentMessageId: (userMessage as any).parentMessageId?.toString() ?? null,
       originalMessageId: (userMessage as any).originalMessageId?.toString() ?? null,
+      attachmentId: (userMessage as any).attachmentId?.toString() ?? null,
+      attachment: toSafeAttachmentRecord(verifiedAttachment),
       createdAt: userMessage.createdAt,
     },
     assistantMessage: {
@@ -495,11 +593,15 @@ export interface ChatStreamCallbacks {
       status: string;
       parentMessageId?: string | null;
       originalMessageId?: string | null;
+      attachmentId?: string | null;
+      attachment?: Record<string, unknown> | null;
       createdAt: Date;
     };
     conversationId: string;
   }) => void;
   onChunk: (chunk: string) => void;
+  onStatus?: (status: string, message: string) => void;
+  onToolStatus?: (event: ToolStatusEvent) => void;
 }
 
 export const processChatStream = async (
@@ -567,6 +669,16 @@ export const processChatStream = async (
     const { parentMessageId: branchParentId, originalMessageId } =
       await resolveBranchForChat(conversation, userId, input.editMessageId);
 
+    // 3c. Verify attachment belongs to user and conversation before credit deduction or persistence
+    let verifiedAttachment: IAttachment | null = null;
+    if (input.attachmentId) {
+      verifiedAttachment = await verifyAttachmentForMessage(
+        input.attachmentId,
+        userId,
+        conversation._id.toString(),
+      );
+    }
+
     // 4. Deduct application credits atomically BEFORE invoking the AI provider
     await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST);
 
@@ -595,6 +707,7 @@ export const processChatStream = async (
         model: null,
         provider: null,
         usage: null,
+        attachmentId: input.attachmentId ?? null,
       });
 
       // Notify caller that stream has started with the created user message
@@ -607,6 +720,8 @@ export const processChatStream = async (
           status: userMessage.status,
           parentMessageId: (userMessage as any).parentMessageId?.toString() ?? null,
           originalMessageId: (userMessage as any).originalMessageId?.toString() ?? null,
+          attachmentId: (userMessage as any).attachmentId?.toString() ?? null,
+          attachment: toSafeAttachmentRecord(verifiedAttachment),
           createdAt: userMessage.createdAt,
         },
         conversationId: conversation._id.toString(),
@@ -621,30 +736,101 @@ export const processChatStream = async (
         maxChars: env.AI_MAX_CONTEXT_CHARS,
         leafMessageId: userMessage._id,
         customProvider: provider,
+        imageUrl:
+          verifiedAttachment?.type === ATTACHMENT_TYPES.IMAGE ||
+          (!verifiedAttachment?.type && verifiedAttachment?.secureUrl)
+            ? verifiedAttachment?.secureUrl
+            : undefined,
+        documentContext:
+          verifiedAttachment?.type === ATTACHMENT_TYPES.DOCUMENT &&
+          verifiedAttachment.extractedText
+            ? {
+                originalName: verifiedAttachment.originalName,
+                mimeType: verifiedAttachment.mimeType,
+                extractedText: verifiedAttachment.extractedText,
+              }
+            : undefined,
       });
 
-    // 7. Invoke AI Provider Streaming
-    if (typeof provider.generateChatStream !== "function") {
-      throw new AppError(
-        `Provider "${provider.name}" does not support streaming`,
-        500,
-        "STREAMING_NOT_SUPPORTED",
-      );
-    }
+    // 7. Invoke AI Provider Streaming or AgentLoop if tools required
+    const isToolNeeded = toolRegistry.isToolRequired(trimmedContent);
 
-    for await (const chunk of provider.generateChatStream(aiMessages, undefined, signal)) {
-      if (signal?.aborted) {
-        break;
+    if (isToolNeeded) {
+      const loop = new AgentLoop({
+        provider,
+        registry: toolRegistry,
+      });
+
+      const agentResult = await loop.run(
+        {
+          userId,
+          task: trimmedContent,
+          conversationId: conversation._id.toString(),
+          initialMessages: aiMessages,
+          maxSteps: 10,
+        },
+        {
+          signal,
+          callbacks: {
+            onStatus: (status, message) => {
+              callbacks.onStatus?.(status, message);
+            },
+            onToolStatus: (event) => {
+              callbacks.onToolStatus?.(event);
+            },
+            onChunk: (chunk) => {
+              if (chunk) {
+                fullAssistantContent += chunk;
+                callbacks.onChunk(chunk);
+              }
+            },
+          },
+        },
+      );
+
+      if (signal?.aborted || agentResult.status === AGENT_STATUSES.CANCELLED) {
+        // Handled cleanly by signal.aborted check below; do not override empty fullAssistantContent
+      } else if (agentResult.status === AGENT_STATUSES.FAILED && !fullAssistantContent) {
+        streamError = new AppError(
+          agentResult.error || "AI provider failed to generate response",
+          502,
+          "AI_PROVIDER_ERROR",
+        );
+      } else if (!fullAssistantContent && agentResult.output) {
+        fullAssistantContent = agentResult.output;
+        callbacks.onChunk(agentResult.output);
       }
-      if (typeof chunk.content === "string" && chunk.content.length > 0) {
-        fullAssistantContent += chunk.content;
-        callbacks.onChunk(chunk.content);
+
+      if (agentResult.usage) {
+        capturedUsage = {
+          inputTokens: agentResult.usage.inputTokens,
+          outputTokens: agentResult.usage.outputTokens,
+          totalTokens: agentResult.usage.totalTokens,
+        };
       }
-      if (chunk.model) {
-        capturedModel = chunk.model;
+    } else {
+      if (typeof provider.generateChatStream !== "function") {
+        throw new AppError(
+          `Provider "${provider.name}" does not support streaming`,
+          500,
+          "STREAMING_NOT_SUPPORTED",
+        );
       }
-      if (chunk.usage) {
-        capturedUsage = chunk.usage;
+
+      for await (const chunk of provider.generateChatStream(aiMessages, undefined, signal)) {
+        if (signal?.aborted) {
+          break;
+        }
+        if (typeof chunk.content === "string" && chunk.content.length > 0) {
+          fullAssistantContent += chunk.content;
+          callbacks.onChunk(chunk.content);
+        }
+        if (chunk.model) {
+          capturedModel = chunk.model;
+        }
+        if (chunk.usage) {
+          capturedUsage = chunk.usage;
+        }
       }
     }
   } catch (executionError: unknown) {
@@ -872,6 +1058,8 @@ export const processChatStream = async (
       status: userMessage.status,
       parentMessageId: (userMessage as any).parentMessageId?.toString() ?? null,
       originalMessageId: (userMessage as any).originalMessageId?.toString() ?? null,
+      attachmentId: (userMessage as any).attachmentId?.toString() ?? null,
+      attachment: toSafeAttachmentRecord(verifiedAttachment),
       createdAt: userMessage.createdAt,
     },
     assistantMessage: {
