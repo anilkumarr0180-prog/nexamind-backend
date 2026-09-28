@@ -117,23 +117,30 @@ function trimMessagesToBudget(
   return result;
 }
 
-export function formatGroqMessages(messages: AIMessage[]): Array<Record<string, unknown>> {
+export function formatGroqMessages(
+  messages: AIMessage[],
+  isVisionModel: boolean = true,
+): Array<Record<string, unknown>> {
   const sanitized = messages.map((m) => {
     let content: unknown = typeof m.content === "string" ? m.content.slice(0, 8000) : "";
 
     if (m.imageUrl && m.role === "user") {
-      content = [
-        {
-          type: "text",
-          text: typeof m.content === "string" ? m.content.slice(0, 8000) : "",
-        },
-        {
-          type: "image_url",
-          image_url: {
-            url: m.imageUrl,
+      if (isVisionModel) {
+        content = [
+          {
+            type: "text",
+            text: typeof m.content === "string" ? m.content.slice(0, 8000) : "",
           },
-        },
-      ];
+          {
+            type: "image_url",
+            image_url: {
+              url: m.imageUrl,
+            },
+          },
+        ];
+      } else {
+        content = `${typeof m.content === "string" ? m.content.slice(0, 8000) : ""}\n[Attached Image: ${m.imageUrl}]`;
+      }
     }
 
     const msgObj: Record<string, unknown> = {
@@ -198,14 +205,18 @@ export class GroqProvider implements AIProvider {
       );
     }
 
+    const hasVision = messages.some((m) => Boolean(m.imageUrl));
     const attemptedModels = [...(options?._attemptedModels ?? [])];
-    let targetModel = resolveValidModel(options?.model ?? this.defaultModel);
+    let targetModel = hasVision
+      ? "qwen/qwen3.8-27b"
+      : resolveValidModel(options?.model ?? this.defaultModel);
     attemptedModels.push(targetModel);
 
     // Strict safe output token clamping (600 tokens max) to guarantee pre-flight OTPM limits
     const maxTokens = options?.maxTokens ?? 600;
 
-    const sanitizedMessages = formatGroqMessages(messages);
+    const isVisionModel = targetModel === "qwen/qwen3.8-27b";
+    const sanitizedMessages = formatGroqMessages(messages, isVisionModel);
 
     const budgetedMessages = trimMessagesToBudget(sanitizedMessages);
 
@@ -245,6 +256,13 @@ export class GroqProvider implements AIProvider {
 
         // 1. Model not found or deprecated (404)
         if (response.status === 404 || errorMsg.toLowerCase().includes("does not exist")) {
+          if (hasVision) {
+            throw new AppError(
+              `Groq vision model "${targetModel}" is unavailable: ${errorMsg}`,
+              502,
+              "AI_PROVIDER_ERROR",
+            );
+          }
           const canFallback =
             targetModel !== DEFAULT_RECOMMENDED_MODEL &&
             !attemptedModels.includes(DEFAULT_RECOMMENDED_MODEL) &&
@@ -285,6 +303,13 @@ export class GroqProvider implements AIProvider {
 
         // 3. Rate limit (429): bounded fallback retry, never cycle back to attempted models
         if (response.status === 429) {
+          if (hasVision) {
+            throw new AppError(
+              "Groq vision AI is currently rate-limited. Please wait a few seconds and try again.",
+              429,
+              "RATE_LIMIT_EXCEEDED",
+            );
+          }
           const fallbackCandidate =
             targetModel === DEFAULT_RECOMMENDED_MODEL ? FALLBACK_MODEL : DEFAULT_RECOMMENDED_MODEL;
 
@@ -431,13 +456,17 @@ export class GroqProvider implements AIProvider {
       );
     }
 
+    const hasVision = messages.some((m) => Boolean(m.imageUrl));
     const attemptedModels = [...(options?._attemptedModels ?? [])];
-    let targetModel = resolveValidModel(options?.model ?? this.defaultModel);
+    let targetModel = hasVision
+      ? "qwen/qwen3.8-27b"
+      : resolveValidModel(options?.model ?? this.defaultModel);
     attemptedModels.push(targetModel);
 
     const maxTokens = options?.maxTokens ?? 600;
 
-    const sanitizedMessages = formatGroqMessages(messages);
+    const isVisionModel = targetModel === "qwen/qwen3.8-27b";
+    const sanitizedMessages = formatGroqMessages(messages, isVisionModel);
 
     const budgetedMessages = trimMessagesToBudget(sanitizedMessages);
 
@@ -510,6 +539,13 @@ export class GroqProvider implements AIProvider {
 
       // 1. Model not found or deprecated (404)
       if (response.status === 404 || errorMsg.toLowerCase().includes("does not exist")) {
+        if (hasVision) {
+          throw new AppError(
+            `Groq vision model "${targetModel}" is unavailable: ${errorMsg}`,
+            502,
+            "AI_PROVIDER_ERROR",
+          );
+        }
         const canFallback =
           targetModel !== DEFAULT_RECOMMENDED_MODEL &&
           !attemptedModels.includes(DEFAULT_RECOMMENDED_MODEL) &&
@@ -554,6 +590,13 @@ export class GroqProvider implements AIProvider {
 
       // 3. Rate limit (429): bounded fallback retry, never cycle back to attempted models
       if (response.status === 429) {
+        if (hasVision) {
+          throw new AppError(
+            "Groq vision AI is currently rate-limited. Please wait a few seconds and try again.",
+            429,
+            "RATE_LIMIT_EXCEEDED",
+          );
+        }
         const fallbackCandidate =
           targetModel === DEFAULT_RECOMMENDED_MODEL ? FALLBACK_MODEL : DEFAULT_RECOMMENDED_MODEL;
 
