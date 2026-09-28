@@ -97,6 +97,12 @@ export const handleChatStream = async (
             res.write(`data: ${JSON.stringify({ type: "chunk", content: chunk })}\n\n`);
           }
         },
+        onSources: (sources) => {
+          ensureHeaders();
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: "sources", sources })}\n\n`);
+          }
+        },
       },
       abortController.signal,
     );

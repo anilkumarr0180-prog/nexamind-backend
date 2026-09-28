@@ -82,6 +82,20 @@ export const MAX_PDF_PAGES = 50;
  */
 export const MAX_DOCUMENT_EXTRACTED_CHARS = 100_000;
 
+/**
+ * Maximum number of chunks allowed per document (Step 18 production hardening).
+ * Prevents resource exhaustion from oversized or adversarial documents.
+ */
+export const MAX_DOCUMENT_CHUNKS = 100;
+
+/**
+ * Bounded top-K and similarity limits for RAG (Step 18 production hardening).
+ */
+export const DEFAULT_RAG_TOP_K = 5;
+export const MAX_RAG_TOP_K = 10;
+export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.5;
+export const MIN_RAG_SIMILARITY_THRESHOLD = 0.3;
+
 export const MAX_ATTACHMENT_FILE_SIZE = 10 * 1024 * 1024;
 
 export interface IAttachment {
@@ -176,3 +190,22 @@ export interface DocumentUploadResponse {
   status: AttachmentStatus;
   extractedTextLength: number;
 }
+
+export type {
+  DocumentChunk,
+  ChunkingOptions,
+  ChunkDocumentTextInput,
+} from "./document-chunking.service.js";
+
+export type { IDocumentChunk } from "./document-chunk.model.js";
+export type {
+  ProcessDocumentEmbeddingOptions,
+  ProcessDocumentEmbeddingResult,
+} from "./document-embedding.service.js";
+export type {
+  SemanticDocumentSearchInput,
+  RelevantDocumentChunk,
+  DocumentSearchResult,
+} from "./document-search.service.js";
+
+

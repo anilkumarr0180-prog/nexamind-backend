@@ -15,6 +15,8 @@ import {
 import { extractText, getDocumentProxy } from "unpdf";
 import mammoth from "mammoth";
 import * as attachmentRepository from "./attachment.repository.js";
+import { processDocumentEmbeddings } from "./document-embedding.service.js";
+import { deleteDocumentChunksByAttachmentId } from "./document-chunk.repository.js";
 import {
   ALLOWED_IMAGE_EXTENSIONS,
   ALLOWED_IMAGE_MIME_TYPES,
@@ -95,6 +97,94 @@ export const validateImageMetadata = (
     mimeType: normalizedMime as AllowedImageMimeType,
     size: input.size,
   };
+};
+
+/**
+ * Validates image buffer magic bytes against declared extension to prevent extension spoofing.
+ * Supported:
+ * - JPEG (.jpg, .jpeg): 0xFF, 0xD8, 0xFF
+ * - PNG (.png): 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
+ * - WEBP (.webp): starts with "RIFF" (bytes 0..3) and contains "WEBP" (bytes 8..11)
+ */
+export const validateImageContent = (
+  bufferOrString: Buffer | string,
+  extension: string,
+): void => {
+  const buf = Buffer.isBuffer(bufferOrString)
+    ? bufferOrString
+    : Buffer.from(bufferOrString, "binary");
+
+  if (buf.length < 4) {
+    throw new AppError(
+      "Image file content is too short or corrupted",
+      400,
+      "INVALID_IMAGE_CONTENT",
+    );
+  }
+
+  const ext = extension.toLowerCase();
+
+  // Executable / script binary check
+  if (buf.length >= 2 && buf[0] === 0x4d && buf[1] === 0x5a) {
+    throw new AppError(
+      "Executable file spoofed as image is not allowed",
+      400,
+      "INVALID_IMAGE_CONTENT",
+    );
+  }
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x7f &&
+    buf[1] === 0x45 &&
+    buf[2] === 0x4c &&
+    buf[3] === 0x46
+  ) {
+    throw new AppError(
+      "Executable file spoofed as image is not allowed",
+      400,
+      "INVALID_IMAGE_CONTENT",
+    );
+  }
+
+  if (ext === ".jpg" || ext === ".jpeg") {
+    if (buf[0] !== 0xff || buf[1] !== 0xd8 || buf[2] !== 0xff) {
+      throw new AppError(
+        "Invalid or spoofed JPEG image: missing valid JPEG magic bytes",
+        400,
+        "INVALID_IMAGE_CONTENT",
+      );
+    }
+  } else if (ext === ".png") {
+    if (
+      buf.length < 8 ||
+      buf[0] !== 0x89 ||
+      buf[1] !== 0x50 ||
+      buf[2] !== 0x4e ||
+      buf[3] !== 0x47 ||
+      buf[4] !== 0x0d ||
+      buf[5] !== 0x0a ||
+      buf[6] !== 0x1a ||
+      buf[7] !== 0x0a
+    ) {
+      throw new AppError(
+        "Invalid or spoofed PNG image: missing valid PNG magic bytes",
+        400,
+        "INVALID_IMAGE_CONTENT",
+      );
+    }
+  } else if (ext === ".webp") {
+    if (
+      buf.length < 12 ||
+      buf.toString("ascii", 0, 4) !== "RIFF" ||
+      buf.toString("ascii", 8, 12) !== "WEBP"
+    ) {
+      throw new AppError(
+        "Invalid or spoofed WEBP image: missing valid RIFF/WEBP magic bytes",
+        400,
+        "INVALID_IMAGE_CONTENT",
+      );
+    }
+  }
 };
 
 /**
@@ -245,6 +335,21 @@ export const extractDocumentText = async (
       throw new AppError("Invalid DOCX content", 400, "INVALID_DOCX");
     }
 
+    // DOCX files are standard ZIP archives: magic header 0x50, 0x4B, 0x03, 0x04 ("PK\x03\x04")
+    if (
+      buffer.length < 4 ||
+      buffer[0] !== 0x50 ||
+      buffer[1] !== 0x4b ||
+      buffer[2] !== 0x03 ||
+      buffer[3] !== 0x04
+    ) {
+      throw new AppError(
+        "Failed to extract text from DOCX: invalid or corrupted DOCX file (missing valid PK zip header)",
+        400,
+        "INVALID_DOCX",
+      );
+    }
+
     let extractionResult;
     try {
       extractionResult = await mammoth.extractRawText({ buffer });
@@ -284,6 +389,22 @@ export const extractDocumentText = async (
       uint8Array = new Uint8Array(Buffer.from(bufferOrString, "binary"));
     } else {
       throw new AppError("Invalid PDF content", 400, "INVALID_PDF");
+    }
+
+    // PDF files must start with "%PDF-" (0x25, 0x50, 0x44, 0x46, 0x2D)
+    if (
+      uint8Array.length < 5 ||
+      uint8Array[0] !== 0x25 ||
+      uint8Array[1] !== 0x50 ||
+      uint8Array[2] !== 0x44 ||
+      uint8Array[3] !== 0x46 ||
+      uint8Array[4] !== 0x2d
+    ) {
+      throw new AppError(
+        "Failed to extract text from PDF: invalid or corrupted PDF file (missing %PDF- header)",
+        400,
+        "INVALID_PDF",
+      );
     }
 
     let pdf;
@@ -332,6 +453,43 @@ export const extractDocumentText = async (
     return rawText;
   }
 
+  // Reject executable or binary headers in text documents
+  if (Buffer.isBuffer(bufferOrString) && bufferOrString.length >= 2) {
+    if (bufferOrString[0] === 0x4d && bufferOrString[1] === 0x5a) {
+      throw new AppError(
+        "Failed to extract text from document: executable binary (MZ) detected",
+        400,
+        "TEXT_EXTRACTION_FAILED",
+      );
+    }
+    if (
+      bufferOrString.length >= 4 &&
+      bufferOrString[0] === 0x7f &&
+      bufferOrString[1] === 0x45 &&
+      bufferOrString[2] === 0x4c &&
+      bufferOrString[3] === 0x46
+    ) {
+      throw new AppError(
+        "Failed to extract text from document: executable binary (ELF) detected",
+        400,
+        "TEXT_EXTRACTION_FAILED",
+      );
+    }
+    if (
+      bufferOrString.length >= 4 &&
+      bufferOrString[0] === 0xca &&
+      bufferOrString[1] === 0xfe &&
+      bufferOrString[2] === 0xba &&
+      bufferOrString[3] === 0xbe
+    ) {
+      throw new AppError(
+        "Failed to extract text from document: binary file detected",
+        400,
+        "TEXT_EXTRACTION_FAILED",
+      );
+    }
+  }
+
   let text = "";
   if (typeof bufferOrString === "string") {
     text = bufferOrString;
@@ -373,6 +531,7 @@ export interface UploadDocumentAttachmentInput {
   originalName: string;
   mimeType: string;
   size: number;
+  generateEmbeddings?: boolean | undefined;
 }
 
 /**
@@ -431,6 +590,15 @@ export const uploadDocumentAttachment = async (
       );
     }
     throw dbError;
+  }
+
+  // 6. Optionally process document chunk embeddings if requested
+  if (params.generateEmbeddings) {
+    await processDocumentEmbeddings(attachment);
+    const refreshed = await attachmentRepository.findAttachmentById(attachment._id);
+    if (refreshed) {
+      attachment = refreshed;
+    }
   }
 
   return {
@@ -506,6 +674,10 @@ export const uploadImageAttachment = async (
     mimeType: params.mimeType,
     size: params.size,
   });
+
+  // 2b. Extension spoofing & magic bytes validation (Step 18)
+  const ext = path.extname(validated.originalName).toLowerCase();
+  validateImageContent(params.file, ext);
 
   // 3. Upload to Cloudinary under the exact requested folder:
   // nexamind/users/{userId}/conversations/{conversationId}/images
@@ -744,7 +916,8 @@ export const deleteAttachment = async (
     }
   }
 
-  // Delete MongoDB Attachment record
+  // Delete MongoDB Attachment record and associated document chunks
+  await deleteDocumentChunksByAttachmentId(attachment._id);
   await attachmentRepository.deleteAttachmentById(attachment._id);
 
   // If force deleting while messages reference it, nullify references to avoid dangling IDs
@@ -817,9 +990,52 @@ export const deleteConversationAttachments = async (
       }
     }
 
+    await deleteDocumentChunksByAttachmentId(att._id);
     await attachmentRepository.deleteAttachmentById(att._id);
     deletedCount++;
   }
 
   return deletedCount;
 };
+
+export {
+  chunkDocumentText,
+  chunkDocument,
+  chunkAttachment,
+  cleanDocumentText,
+  estimateTokenCount,
+  DEFAULT_MAX_CHUNK_SIZE,
+  DEFAULT_CHUNK_SIZE,
+  DEFAULT_CHUNK_OVERLAP,
+  DEFAULT_OVERLAP,
+} from "./document-chunking.service.js";
+
+export {
+  processDocumentEmbeddings,
+  validateEmbeddingVector,
+  setDefaultEmbeddingProvider,
+  getDefaultEmbeddingProvider,
+} from "./document-embedding.service.js";
+
+export {
+  DocumentChunk,
+  DocumentChunkModel,
+} from "./document-chunk.model.js";
+
+export {
+  createDocumentChunks,
+  findDocumentChunksByAttachmentId,
+  findDocumentChunksByAttachmentIds,
+  deleteDocumentChunksByAttachmentId,
+  countDocumentChunksByAttachmentId,
+} from "./document-chunk.repository.js";
+
+export {
+  semanticDocumentSearch,
+  searchDocumentChunks,
+  calculateCosineSimilarity,
+  DEFAULT_DOCUMENT_SEARCH_LIMIT,
+  DEFAULT_DOCUMENT_SIMILARITY_THRESHOLD,
+} from "./document-search.service.js";
+
+

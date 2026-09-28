@@ -30,6 +30,7 @@ export type CreateMessageData = {
   parentMessageId?: string | Types.ObjectId | null;
   originalMessageId?: string | Types.ObjectId | null;
   attachmentId?: string | Types.ObjectId | null;
+  sources?: Array<{ attachmentId: Types.ObjectId | string; filename: string; chunkIndex: number }> | null;
 };
 
 export const createMessage = async (data: CreateMessageData) => {

@@ -159,10 +159,19 @@ export const getMessageById = async (
   }
 
   const plain = typeof (message as any).toObject === "function" ? (message as any).toObject() : message;
+  const sources = Array.isArray(plain.sources) && plain.sources.length > 0
+    ? plain.sources.map((s: any) => ({
+        attachmentId: s.attachmentId?.toString?.() ?? String(s.attachmentId),
+        filename: s.filename,
+        chunkIndex: s.chunkIndex,
+      }))
+    : null;
+
   return {
     ...plain,
     attachmentId: plain.attachmentId?.toString() ?? null,
     attachment: safeAttachment,
+    sources,
   };
 };
 
@@ -223,10 +232,19 @@ export const getConversationMessages = async (
     const plain = typeof (msg as any).toObject === "function" ? (msg as any).toObject() : msg;
     const attIdStr = plain.attachmentId?.toString() ?? null;
     const safeAttachment = attIdStr ? attachmentMap.get(attIdStr) ?? null : null;
+    const sources = Array.isArray(plain.sources) && plain.sources.length > 0
+      ? plain.sources.map((s: any) => ({
+          attachmentId: s.attachmentId?.toString?.() ?? String(s.attachmentId),
+          filename: s.filename,
+          chunkIndex: s.chunkIndex,
+        }))
+      : null;
+
     return {
       ...plain,
       attachmentId: attIdStr,
       attachment: safeAttachment,
+      sources,
     };
   });
 
