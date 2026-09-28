@@ -146,18 +146,46 @@ export class AgentLoop {
       };
     }
 
-    // Prepare initial conversation messages
-    if (input.systemPrompt?.trim()) {
-      state.messages.push({
-        role: "system",
-        content: input.systemPrompt.trim(),
-      });
+    // Prepare initial conversation messages:
+    // Deduplicate and combine system prompts cleanly into a single unified system prompt at index 0.
+    const rawInitialMessages = input.initialMessages || [];
+    const nonSystemInitialMessages = rawInitialMessages.filter(
+      (m) => m.role !== "system",
+    );
+    const existingSystemContent = rawInitialMessages
+      .filter((m) => m.role === "system")
+      .map((m) => m.content?.trim())
+      .filter(Boolean)
+      .join("\n\n");
+
+    const agentDirective =
+      "You are NexaMind Agent, an intelligent autonomous agent capable of solving tasks using tools. When tools are available (such as calculator, datetime, unit_conversion), you MUST use them to perform accurate calculations and operations.";
+
+    const explicitSystem = input.systemPrompt?.trim();
+    const systemPromptParts: string[] = [];
+
+    if (explicitSystem) {
+      systemPromptParts.push(explicitSystem);
+    } else {
+      systemPromptParts.push(agentDirective);
     }
 
-    if (input.initialMessages && input.initialMessages.length > 0) {
+    if (
+      existingSystemContent &&
+      !systemPromptParts.some((p) => p.includes(existingSystemContent))
+    ) {
+      systemPromptParts.push(existingSystemContent);
+    }
+
+    state.messages.push({
+      role: "system",
+      content: systemPromptParts.join("\n\n"),
+    });
+
+    if (nonSystemInitialMessages.length > 0) {
       if (input.context && Object.keys(input.context).length > 0) {
-        const lastIdx = input.initialMessages.length - 1;
-        const mapped = input.initialMessages.map((m, idx) => {
+        const lastIdx = nonSystemInitialMessages.length - 1;
+        const mapped = nonSystemInitialMessages.map((m, idx) => {
           if (idx === lastIdx && m.role === "user") {
             return {
               ...m,
@@ -168,7 +196,7 @@ export class AgentLoop {
         });
         state.messages.push(...mapped);
       } else {
-        state.messages.push(...input.initialMessages);
+        state.messages.push(...nonSystemInitialMessages);
       }
     } else {
       let userContent = input.task.trim();
