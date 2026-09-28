@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { AppError } from "../../errors/app.error.js";
 import * as subscriptionService from "./subscription.service.js";
+import { extractPolarErrorMessage } from "./subscription.service.js";
 import * as billingCheckoutService from "./billing-checkout.service.js";
 import { polarClient } from "../../config/polar.js";
 
@@ -204,7 +205,7 @@ export const getPortalSession = async (
       },
     });
   } catch (error: unknown) {
-    console.error("[SUBSCRIPTION] Failed to create customer portal session:", error);
+    console.error("[SUBSCRIPTION] Failed to create customer portal session:", extractPolarErrorMessage(error));
 
     if (error instanceof AppError) {
       throw error;

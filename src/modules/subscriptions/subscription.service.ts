@@ -17,6 +17,36 @@ import type {
 import type { PlanCode } from "../plans/plan.types.js";
 
 /**
+ * Unpacks human-readable error messages from Polar SDK ResponseValidationError and API errors.
+ */
+export const extractPolarErrorMessage = (err: unknown): string => {
+  if (!err) return 'Unknown billing error';
+  const e = err as any;
+  if (e.rawValue?.error_description) {
+    return e.rawValue.error_description + ' (' + (e.rawValue.error || 'error') + ')';
+  }
+  if (e.rawValue?.detail) {
+    return typeof e.rawValue.detail === 'string'
+      ? e.rawValue.detail
+      : JSON.stringify(e.rawValue.detail);
+  }
+  if (typeof e.body$ === 'string') {
+    try {
+      const parsed = JSON.parse(e.body$);
+      if (parsed.error_description) {
+        return parsed.error_description + ' (' + (parsed.error || 'error') + ')';
+      }
+      if (parsed.detail) {
+        return typeof parsed.detail === 'string' ? parsed.detail : JSON.stringify(parsed.detail);
+      }
+    } catch {
+      return e.body$;
+    }
+  }
+  return e.message || String(err);
+};
+
+/**
  * Automatically synchronizes an active subscription from Polar to MongoDB
  * if the user has subscribed via Polar but webhooks were delayed or dropped.
  */
@@ -208,7 +238,7 @@ export const upgradeSubscription = async (
     } catch (polarError: any) {
       console.warn(
         "[SUBSCRIPTION] Polar upgrade API warning:",
-        polarError?.message || polarError,
+        extractPolarErrorMessage(polarError),
       );
     }
   }
@@ -280,7 +310,7 @@ export const cancelSubscription = async (userId: string) => {
       });
       console.log(`[SUBSCRIPTION] Polar subscription ${subscription.providerSubscriptionId} set to cancel at period end`);
     } catch (polarError) {
-      console.warn("[SUBSCRIPTION] Polar cancel update warning (persisting locally):", polarError);
+      console.warn("[SUBSCRIPTION] Polar cancel update warning (persisting locally):", extractPolarErrorMessage(polarError));
     }
   }
 
@@ -317,7 +347,7 @@ export const resumeSubscription = async (userId: string) => {
       });
       console.log(`[SUBSCRIPTION] Polar subscription ${subscription.providerSubscriptionId} resumed (cancelAtPeriodEnd: false)`);
     } catch (polarError) {
-      console.warn("[SUBSCRIPTION] Polar resume update warning (persisting locally):", polarError);
+      console.warn("[SUBSCRIPTION] Polar resume update warning (persisting locally):", extractPolarErrorMessage(polarError));
     }
   }
 
