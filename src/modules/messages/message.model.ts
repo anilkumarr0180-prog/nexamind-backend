@@ -110,6 +110,29 @@ const messageSchema = new Schema(
       default: null,
       index: true,
     },
+
+    sources: {
+      type: [
+        {
+          _id: false,
+          attachmentId: {
+            type: Schema.Types.ObjectId,
+            ref: "Attachment",
+            required: true,
+          },
+          filename: {
+            type: String,
+            required: true,
+            trim: true,
+          },
+          chunkIndex: {
+            type: Number,
+            required: true,
+          },
+        },
+      ],
+      default: null,
+    },
   },
   {
     timestamps: true,

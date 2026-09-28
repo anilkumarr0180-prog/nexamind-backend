@@ -1,5 +1,5 @@
 import { summarizeConversationIfNeeded } from "../conversations/conversation-summary.service.js";
-import { buildFullChatContext } from "./context-builder.service.js";
+import { buildFullChatContext, type DocumentSourceCitation } from "./context-builder.service.js";
 import type { Types } from "mongoose";
 import { env } from "../../config/env.js";
 import { AppError } from "../../errors/app.error.js";
@@ -132,8 +132,10 @@ export type OrchestratedChatResult = {
       outputTokens: number;
       totalTokens: number;
     } | null;
+    sources?: DocumentSourceCitation[] | null;
     createdAt: Date;
   };
+  sources?: DocumentSourceCitation[] | null;
   usage: {
     inputTokens: number;
     outputTokens: number;
@@ -329,6 +331,7 @@ export const processChatRequest = async (
     let assistantMessage:
       | Awaited<ReturnType<typeof messageRepository.createMessage>>
       | undefined;
+    let retrievedSources: DocumentSourceCitation[] = [];
 
     try {
       // 5. Persist USER message
@@ -369,6 +372,10 @@ export const processChatRequest = async (
                 extractedText: verifiedAttachment.extractedText,
               }
             : undefined,
+        attachmentId: verifiedAttachment?._id,
+        onSourcesRetrieved: (sources) => {
+          retrievedSources = sources;
+        },
       });
 
       // 7. Invoke AI Provider or AgentLoop if tools required
@@ -423,6 +430,7 @@ export const processChatRequest = async (
         model: aiResponse.model,
         provider: aiResponse.provider,
         usage: aiResponse.usage,
+        sources: retrievedSources.length > 0 ? retrievedSources : null,
       });
   } catch (executionError: unknown) {
     // Compensate / refund deducted credits
@@ -573,8 +581,10 @@ export const processChatRequest = async (
       provider: assistantMessage.provider ?? null,
       parentMessageId: (assistantMessage as any).parentMessageId?.toString() ?? null,
       usage: assistantMessage.usage ?? null,
+      sources: (assistantMessage as any).sources ?? (retrievedSources.length > 0 ? retrievedSources : null),
       createdAt: assistantMessage.createdAt,
     },
+    sources: retrievedSources.length > 0 ? retrievedSources : null,
     usage: assistantMessage.usage ?? null,
   };
   } finally {
@@ -602,6 +612,7 @@ export interface ChatStreamCallbacks {
   onChunk: (chunk: string) => void;
   onStatus?: (status: string, message: string) => void;
   onToolStatus?: (event: ToolStatusEvent) => void;
+  onSources?: (sources: DocumentSourceCitation[]) => void;
 }
 
 export const processChatStream = async (
@@ -693,6 +704,7 @@ export const processChatStream = async (
     let capturedModel: string | null = null;
     let capturedUsage: AIUsage | null = null;
     let streamError: unknown = null;
+    let retrievedSources: DocumentSourceCitation[] = [];
 
     try {
       // 5. Persist USER message
@@ -750,6 +762,13 @@ export const processChatStream = async (
                 extractedText: verifiedAttachment.extractedText,
               }
             : undefined,
+        attachmentId: verifiedAttachment?._id,
+        onSourcesRetrieved: (sources) => {
+          retrievedSources = sources;
+          if (sources.length > 0) {
+            callbacks.onSources?.(sources);
+          }
+        },
       });
 
     // 7. Invoke AI Provider Streaming or AgentLoop if tools required
@@ -949,6 +968,7 @@ export const processChatStream = async (
     model: capturedModel ?? (provider.name === "groq" ? "qwen/qwen3.8-27b" : "llama3.2:3b"),
     provider: provider.name,
     usage: fallbackUsage,
+    sources: retrievedSources.length > 0 ? retrievedSources : null,
   });
 
   // 9. Update conversation metadata
@@ -1072,8 +1092,10 @@ export const processChatStream = async (
       provider: assistantMessage.provider ?? null,
       parentMessageId: (assistantMessage as any).parentMessageId?.toString() ?? null,
       usage: assistantMessage.usage ?? null,
+      sources: (assistantMessage as any).sources ?? (retrievedSources.length > 0 ? retrievedSources : null),
       createdAt: assistantMessage.createdAt,
     },
+    sources: retrievedSources.length > 0 ? retrievedSources : null,
     usage: assistantMessage.usage ?? null,
   };
   } finally {

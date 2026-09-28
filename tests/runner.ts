@@ -251,6 +251,36 @@ const TEST_SUITES: TestSuite[] = [
     name: "Attachments: Step 12 DOCX Document Support",
     file: "docx-document.test.ts",
   },
+  {
+    id: "document-chunking",
+    name: "Attachments: Step 13 Document Chunking",
+    file: "document-chunking.test.ts",
+  },
+  {
+    id: "document-embedding",
+    name: "Attachments: Step 14 Document Embeddings",
+    file: "document-embedding.test.ts",
+  },
+  {
+    id: "document-search",
+    name: "Attachments: Step 15 Semantic Document Search",
+    file: "document-search.test.ts",
+  },
+  {
+    id: "document-rag-context",
+    name: "AI Context: Step 16 Semantic Document Retrieval (RAG)",
+    file: "document-rag-context.test.ts",
+  },
+  {
+    id: "document-source-citations",
+    name: "AI Context: Step 17 Source Citations",
+    file: "document-source-citations.test.ts",
+  },
+  {
+    id: "production-hardening",
+    name: "Hardening: Step 18 Production Hardening & Safety",
+    file: "production-hardening.test.ts",
+  },
 ];
 
 const maskMongoUri = (uri: string): string => {
