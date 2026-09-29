@@ -10,6 +10,7 @@ import {
   MIN_ALLOWED_STEPS,
   ToolRegistry,
   calculatorTool,
+  webSearchTool,
   AGENT_STATUSES,
   TOOL_CALL_STATUSES,
   type AgentExecutionInput,
@@ -295,8 +296,229 @@ const runTests = async () => {
     console.log("✓ userId, conversationId, and metadata propagated accurately");
   }
 
+  // -------------------------------------------------------------
+  // Test 7: Registered web_search tool is included in tools available to Agent
+  // -------------------------------------------------------------
+  console.log("\n[Test 7] Testing registered web_search tool is included in tools sent to provider...");
+  {
+    const registry = new ToolRegistry();
+    registry.register(calculatorTool);
+    registry.register(webSearchTool);
+
+    let toolsPassedToProvider: any[] = [];
+    const provider = new MockAIProvider(async (messages, options) => {
+      toolsPassedToProvider = options?.tools || [];
+      return {
+        content: "Tools inspected.",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      };
+    });
+
+    const service = new AgentService({ provider, registry });
+    const result = await service.execute({
+      userId: "user_test_7",
+      task: "Inspect tools",
+    });
+
+    assert.equal(result.status, AGENT_STATUSES.COMPLETED);
+    const webSearchDef = toolsPassedToProvider.find((t) => t.name === "web_search");
+    assert.ok(webSearchDef, "web_search must be included in tools sent to AI provider");
+    assert.equal(webSearchDef.name, "web_search");
+    assert.ok(webSearchDef.description, "web_search must have a description");
+    assert.ok(webSearchDef.parameters, "web_search must have parameters/schema");
+    console.log("✓ Registered web_search tool is included in tools available to the Agent");
+  }
+
+  // -------------------------------------------------------------
+  // Test 8: Agent executes web_search tool call and returns result back into Agent flow
+  // -------------------------------------------------------------
+  console.log("\n[Test 8] Testing Agent executes web_search via ToolExecutor and returns result to model...");
+  {
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.TAVILY_API_KEY;
+
+    try {
+      process.env.TAVILY_API_KEY = "mock-tavily-api-key";
+
+      // Mock Tavily HTTP response (does NOT call real Tavily API)
+      globalThis.fetch = async (input, init) => {
+        const body = JSON.parse(init?.body as string);
+        assert.equal(body.query, "current mars rover mission 2026");
+
+        return new Response(
+          JSON.stringify({
+            query: "current mars rover mission 2026",
+            results: [
+              {
+                title: "Mars Exploration Update 2026",
+                url: "https://nasa.example.com/mars-2026",
+                content: "Perseverance discovered organic molecules in Jezero Crater.",
+                score: 0.98,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      };
+
+      const registry = new ToolRegistry();
+      registry.register(calculatorTool);
+      registry.register(webSearchTool);
+
+      let step2ReceivedToolResult = false;
+      const provider = new MockAIProvider(async (messages, options, callIndex) => {
+        if (callIndex === 0) {
+          // Model chooses to call web_search
+          return {
+            content: "",
+            provider: "mock",
+            model: "mock-model",
+            usage: { inputTokens: 25, outputTokens: 12, totalTokens: 37 },
+            toolCalls: [
+              {
+                id: "call_ws_rover",
+                name: "web_search",
+                arguments: { query: "current mars rover mission 2026" },
+              },
+            ],
+          };
+        }
+
+        // Model receives tool execution result in conversation messages
+        const toolMsg = messages.find((m) => m.role === "tool");
+        if (
+          toolMsg &&
+          toolMsg.toolCallId === "call_ws_rover" &&
+          toolMsg.content?.includes("Perseverance")
+        ) {
+          step2ReceivedToolResult = true;
+        }
+
+        return {
+          content: "Perseverance discovered organic molecules in Jezero Crater in 2026.",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 45, outputTokens: 15, totalTokens: 60 },
+        };
+      });
+
+      const service = new AgentService({ provider, registry });
+      const result = await service.execute({
+        userId: "user_test_8",
+        task: "Search for Mars rover discoveries in 2026",
+      });
+
+      assert.equal(result.status, AGENT_STATUSES.COMPLETED);
+      assert.equal(
+        result.output,
+        "Perseverance discovered organic molecules in Jezero Crater in 2026.",
+      );
+      assert.equal(result.stepsCompleted, 2);
+      assert.equal(result.toolCalls.length, 1);
+      assert.equal(result.toolCalls[0].name, "web_search");
+      assert.equal(result.toolCalls[0].status, TOOL_CALL_STATUSES.SUCCESS);
+      const outputData = result.toolCalls[0].result as any;
+      assert.equal(outputData.totalResults, 1);
+      assert.equal(outputData.results[0].title, "Mars Exploration Update 2026");
+      assert.equal(step2ReceivedToolResult, true, "Tool result must be passed back to provider in Agent flow");
+      console.log("✓ Agent executes web_search via ToolExecutor and returns result to model");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey !== undefined) {
+        process.env.TAVILY_API_KEY = originalKey;
+      } else {
+        delete process.env.TAVILY_API_KEY;
+      }
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Test 9: Normal non-web tool call (calculator) still works alongside web_search
+  // -------------------------------------------------------------
+  console.log("\n[Test 9] Testing non-web tool call (calculator) still works alongside web_search...");
+  {
+    const registry = new ToolRegistry();
+    registry.register(calculatorTool);
+    registry.register(webSearchTool);
+
+    const provider = new MockAIProvider(async (messages, options, callIndex) => {
+      if (callIndex === 0) {
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+          toolCalls: [
+            {
+              id: "call_calc_99",
+              name: "calculator",
+              arguments: { expression: "99 * 3" },
+            },
+          ],
+        };
+      }
+      return {
+        content: "99 * 3 equals 297.",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 30, outputTokens: 6, totalTokens: 36 },
+      };
+    });
+
+    const service = new AgentService({ provider, registry });
+    const result = await service.execute({
+      userId: "user_test_9",
+      task: "Compute 99 * 3",
+    });
+
+    assert.equal(result.status, AGENT_STATUSES.COMPLETED);
+    assert.equal(result.output, "99 * 3 equals 297.");
+    assert.equal(result.stepsCompleted, 2);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].name, "calculator");
+    assert.equal(result.toolCalls[0].status, TOOL_CALL_STATUSES.SUCCESS);
+    assert.equal((result.toolCalls[0].result as any).result, 297);
+    console.log("✓ Normal non-web tool call (calculator) continues working seamlessly");
+  }
+
+  // -------------------------------------------------------------
+  // Test 10: Default singleton registry automatically exposes web_search in Agent execution
+  // -------------------------------------------------------------
+  console.log("\n[Test 10] Testing default singleton tool registry exposes web_search in Agent execution...");
+  {
+    let toolsAvailable: any[] = [];
+    const provider = new MockAIProvider(async (messages, options) => {
+      toolsAvailable = options?.tools || [];
+      return {
+        content: "Executed with default registry.",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      };
+    });
+
+    const service = new AgentService({ provider });
+    const result = await service.execute({
+      userId: "user_default_reg",
+      task: "Check default tools",
+    });
+
+    assert.equal(result.status, AGENT_STATUSES.COMPLETED);
+    assert.ok(
+      toolsAvailable.some((t) => t.name === "web_search"),
+      "web_search must be present in default registry tools sent to provider",
+    );
+    assert.ok(
+      toolsAvailable.some((t) => t.name === "calculator"),
+      "calculator must be present in default registry tools sent to provider",
+    );
+    console.log("✓ Default singleton registry automatically exposes all registered tools including web_search");
+  }
+
   console.log("\n==================================================");
-  console.log(" ALL AGENT SERVICE UNIT TESTS PASSED (6/6)       ");
+  console.log(" ALL AGENT SERVICE UNIT TESTS PASSED (10/10)     ");
   console.log("==================================================\n");
 };
 

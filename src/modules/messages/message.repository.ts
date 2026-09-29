@@ -18,6 +18,19 @@ export type MessageUsage = {
   totalTokens: number;
 };
 
+export type RepositoryMessageSource =
+  | {
+      type?: "document" | undefined;
+      attachmentId: Types.ObjectId | string;
+      filename: string;
+      chunkIndex: number;
+    }
+  | {
+      type: "web";
+      title: string;
+      url: string;
+    };
+
 export type CreateMessageData = {
   conversationId: string | Types.ObjectId;
   userId: string | Types.ObjectId;
@@ -30,7 +43,7 @@ export type CreateMessageData = {
   parentMessageId?: string | Types.ObjectId | null;
   originalMessageId?: string | Types.ObjectId | null;
   attachmentId?: string | Types.ObjectId | null;
-  sources?: Array<{ attachmentId: Types.ObjectId | string; filename: string; chunkIndex: number }> | null;
+  sources?: RepositoryMessageSource[] | null;
 };
 
 export const createMessage = async (data: CreateMessageData) => {

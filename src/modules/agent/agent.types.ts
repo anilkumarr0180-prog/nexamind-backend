@@ -145,6 +145,7 @@ export interface AgentStreamCallbacks {
   onStatus?: (status: string, message: string) => void;
   onToolStatus?: (event: ToolStatusEvent) => void;
   onChunk?: (chunk: string) => void;
+  onSources?: (sources: any[]) => void;
   onDone?: (result: AgentExecutionResult) => void;
   onError?: (error: unknown) => void;
 }

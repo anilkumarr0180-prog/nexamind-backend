@@ -30,10 +30,19 @@ export const DEFAULT_RAG_TOP_K = 5;
 export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.5;
 
 export interface DocumentSourceCitation {
+  type?: "document" | undefined;
   attachmentId: string;
   filename: string;
   chunkIndex: number;
 }
+
+export interface WebSourceCitation {
+  type: "web";
+  title: string;
+  url: string;
+}
+
+export type ChatSourceCitation = DocumentSourceCitation | WebSourceCitation;
 
 export interface DocumentAttachmentContext {
   originalName: string;
@@ -61,7 +70,7 @@ export interface BuildFullChatContextOptions {
   documentContext?: DocumentAttachmentContext | undefined;
   attachmentId?: string | Types.ObjectId | undefined;
   ragOptions?: BuildFullChatContextRagOptions | undefined;
-  onSourcesRetrieved?: ((sources: DocumentSourceCitation[]) => void) | undefined;
+  onSourcesRetrieved?: ((sources: ChatSourceCitation[]) => void) | undefined;
 }
 
 /**

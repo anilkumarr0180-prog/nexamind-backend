@@ -160,11 +160,21 @@ export const getMessageById = async (
 
   const plain = typeof (message as any).toObject === "function" ? (message as any).toObject() : message;
   const sources = Array.isArray(plain.sources) && plain.sources.length > 0
-    ? plain.sources.map((s: any) => ({
-        attachmentId: s.attachmentId?.toString?.() ?? String(s.attachmentId),
-        filename: s.filename,
-        chunkIndex: s.chunkIndex,
-      }))
+    ? plain.sources.map((s: any) => {
+        if (s.type === "web" || s.url) {
+          return {
+            type: "web" as const,
+            title: s.title || s.filename || "Web Source",
+            url: s.url,
+          };
+        }
+        return {
+          type: "document" as const,
+          attachmentId: s.attachmentId?.toString?.() ?? String(s.attachmentId),
+          filename: s.filename,
+          chunkIndex: s.chunkIndex,
+        };
+      })
     : null;
 
   return {
@@ -233,11 +243,21 @@ export const getConversationMessages = async (
     const attIdStr = plain.attachmentId?.toString() ?? null;
     const safeAttachment = attIdStr ? attachmentMap.get(attIdStr) ?? null : null;
     const sources = Array.isArray(plain.sources) && plain.sources.length > 0
-      ? plain.sources.map((s: any) => ({
-          attachmentId: s.attachmentId?.toString?.() ?? String(s.attachmentId),
-          filename: s.filename,
-          chunkIndex: s.chunkIndex,
-        }))
+      ? plain.sources.map((s: any) => {
+          if (s.type === "web" || s.url) {
+            return {
+              type: "web" as const,
+              title: s.title || s.filename || "Web Source",
+              url: s.url,
+            };
+          }
+          return {
+            type: "document" as const,
+            attachmentId: s.attachmentId?.toString?.() ?? String(s.attachmentId),
+            filename: s.filename,
+            chunkIndex: s.chunkIndex,
+          };
+        })
       : null;
 
     return {

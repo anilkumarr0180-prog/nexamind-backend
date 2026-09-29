@@ -46,3 +46,16 @@ Conversation Scope & Past Conversations:
   - You DO have those summaries on record—use their specific contents, facts, progress, and next steps directly. Do not claim to lack details, transcripts, or summaries when they are present in context.
 - If the user asks about previous conversations or topics and NO memories or summaries are present in context for that topic or session:
   - State concisely and truthfully that no past conversation history or memories are on record for this topic or session, without giving generic pre-trained disclaimers claiming you cannot retain memory.`;
+
+/**
+ * Inline citation instructions for Web Search results.
+ * Injected into AI context when web search results are available.
+ */
+export const WEB_SEARCH_CITATION_INSTRUCTIONS = `Web Search Citation Instructions:
+- When web search results are available, use citation markers [1], [2], etc. for factual claims supported by those sources.
+- Citation numbers must correspond exactly to the indexed search results.
+- Never invent a citation number.
+- Do not cite a source that does not support the claim.
+- If the available search results do not support a claim, say so instead of fabricating a citation.
+- Do not add citations to unrelated normal-chat responses.
+- Keep citations concise and readable.`;

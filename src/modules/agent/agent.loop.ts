@@ -15,15 +15,32 @@ import {
   type AgentRunOptions,
   TOOL_CALL_STATUSES,
   type ToolCallInfo,
+  type ToolCallResult,
 } from "./agent.types.js";
 import {
   ToolRegistry,
   toolRegistry as defaultToolRegistry,
 } from "./tool.registry.js";
-import {
-  ToolExecutor,
-  toolExecutor as defaultToolExecutor,
-} from "./tool.executor.js";
+import { ToolExecutor, toolExecutor as defaultToolExecutor } from "./tool.executor.js";
+import { isValidWebUrl } from "./tools/web-search.tool.js";
+import { WEB_SEARCH_CITATION_INSTRUCTIONS } from "../ai/prompts/system.prompt.js";
+
+/**
+ * Maximum number of web_search tool executions permitted per AI/Agent request.
+ * Prevents runaway agent loops and unbounded external Tavily search requests.
+ */
+export const MAX_WEB_SEARCHES_PER_REQUEST = 2;
+
+/**
+ * Normalizes a web search query for exact deduplication within an agent request.
+ * Trims surrounding whitespace, collapses internal whitespace, and converts to lowercase.
+ */
+export function normalizeWebSearchQuery(query: unknown): string {
+  if (typeof query !== "string") {
+    return "";
+  }
+  return query.trim().toLowerCase().replace(/\s+/g, " ");
+}
 
 /**
  * Configuration options for initializing an AgentLoop instance.
@@ -117,6 +134,9 @@ export class AgentLoop {
       metadata: input.metadata,
     };
 
+    // Track fresh external web_search executions during this request
+    let freshWebSearchesCount = 0;
+
     // Emit safe initial lifecycle events
     callbacks?.onStart?.({
       conversationId: state.conversationId,
@@ -158,16 +178,11 @@ export class AgentLoop {
       .filter(Boolean)
       .join("\n\n");
 
-    const agentDirective =
-      "You are NexaMind Agent, an intelligent autonomous agent capable of solving tasks using tools. When tools are available (such as calculator, datetime, unit_conversion), you MUST use them to perform accurate calculations and operations.";
-
     const explicitSystem = input.systemPrompt?.trim();
     const systemPromptParts: string[] = [];
 
     if (explicitSystem) {
       systemPromptParts.push(explicitSystem);
-    } else {
-      systemPromptParts.push(agentDirective);
     }
 
     if (
@@ -177,10 +192,12 @@ export class AgentLoop {
       systemPromptParts.push(existingSystemContent);
     }
 
-    state.messages.push({
-      role: "system",
-      content: systemPromptParts.join("\n\n"),
-    });
+    if (systemPromptParts.length > 0) {
+      state.messages.push({
+        role: "system",
+        content: systemPromptParts.join("\n\n"),
+      });
+    }
 
     if (nonSystemInitialMessages.length > 0) {
       if (input.context && Object.keys(input.context).length > 0) {
@@ -344,12 +361,67 @@ export class AgentLoop {
             toolCallId: toolCall.id,
           });
 
-          const toolResult = await this.executor.execute(toolCall, {
-            toolCallId: toolCall.id,
-            userId: state.userId,
-            conversationId: state.conversationId,
-            signal,
-          });
+          let toolResult: ToolCallResult;
+
+          if (toolCall.name === "web_search") {
+            const rawQuery =
+              typeof toolCall.arguments?.query === "string"
+                ? toolCall.arguments.query
+                : "";
+            const normalizedQuery = normalizeWebSearchQuery(rawQuery);
+
+            // Check if the same normalized query was already successfully executed during this request
+            const cachedCall = state.toolCalls.find((tc) => {
+              if (
+                tc.name !== "web_search" ||
+                tc.status !== TOOL_CALL_STATUSES.SUCCESS ||
+                !tc.result ||
+                typeof tc.result !== "object"
+              ) {
+                return false;
+              }
+              const prevRaw =
+                typeof tc.arguments?.query === "string"
+                  ? tc.arguments.query
+                  : "";
+              return normalizeWebSearchQuery(prevRaw) === normalizedQuery;
+            });
+
+            if (cachedCall) {
+              // Reuse previous Web Search result without calling Tavily again
+              toolResult = {
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                output: cachedCall.result,
+                isError: false,
+                durationMs: 0,
+              };
+            } else if (freshWebSearchesCount >= MAX_WEB_SEARCHES_PER_REQUEST) {
+              toolResult = {
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                output:
+                  "Maximum web search limit reached for this turn. Use the search results already retrieved to answer the user.",
+                isError: false,
+                durationMs: 0,
+              };
+            } else {
+              freshWebSearchesCount++;
+              toolResult = await this.executor.execute(toolCall, {
+                toolCallId: toolCall.id,
+                userId: state.userId,
+                conversationId: state.conversationId,
+                signal,
+              });
+            }
+          } else {
+            toolResult = await this.executor.execute(toolCall, {
+              toolCallId: toolCall.id,
+              userId: state.userId,
+              conversationId: state.conversationId,
+              signal,
+            });
+          }
 
           const toolCallCompletedAt = new Date();
           toolCallInfo.completedAt = toolCallCompletedAt;
@@ -382,6 +454,49 @@ export class AgentLoop {
               toolCallId: toolCall.id,
               durationMs: toolCallInfo.durationMs,
             });
+
+            if (
+              toolCall.name === "web_search" &&
+              toolResult.output &&
+              typeof toolResult.output === "object"
+            ) {
+              const webOut = toolResult.output as any;
+              if (Array.isArray(webOut.results)) {
+                const seenUrls = new Set<string>();
+                const webSources: Array<{ type: "web"; title: string; url: string }> = [];
+                for (const r of webOut.results) {
+                  if (r && isValidWebUrl(r.url)) {
+                    const u = r.url.trim();
+                    if (!seenUrls.has(u)) {
+                      seenUrls.add(u);
+                      webSources.push({
+                        type: "web" as const,
+                        title:
+                          typeof r.title === "string" && r.title.trim()
+                            ? r.title.trim()
+                            : u,
+                        url: u,
+                      });
+                    }
+                  }
+                }
+                if (webSources.length > 0) {
+                  callbacks?.onSources?.(webSources);
+                }
+              }
+
+              // Augment system prompt with citation instructions if not already present
+              if (state.messages.length > 0 && state.messages[0]?.role === "system") {
+                if (!state.messages[0].content.includes("Web Search Citation Instructions")) {
+                  state.messages[0].content = `${state.messages[0].content}\n\n${WEB_SEARCH_CITATION_INSTRUCTIONS}`.trim();
+                }
+              } else {
+                state.messages.unshift({
+                  role: "system",
+                  content: WEB_SEARCH_CITATION_INSTRUCTIONS,
+                });
+              }
+            }
           }
 
           state.toolCalls.push(toolCallInfo);
@@ -392,6 +507,12 @@ export class AgentLoop {
             contentStr = toolResult.error
               ? (typeof toolResult.error === "string" ? toolResult.error : JSON.stringify(toolResult.error))
               : JSON.stringify(toolResult.output ?? { error: "Tool execution failed" });
+          } else if (
+            toolCall.name === "web_search" &&
+            toolResult.output &&
+            typeof toolResult.output === "object"
+          ) {
+            contentStr = formatWebSearchResultsForAI(toolResult.output);
           } else if (typeof toolResult.output === "string") {
             contentStr = toolResult.output;
           } else {
@@ -636,3 +757,55 @@ export const runAgentLoop = async (
  * Alias for runAgentLoop.
  */
 export const executeAgent = runAgentLoop;
+
+/**
+ * Formats structured WebSearchOutput into a clearly indexed, 1-based source context for the AI,
+ * complete with explicit inline citation instructions.
+ */
+export function formatWebSearchResultsForAI(output: any): string {
+  if (!output || typeof output !== "object") {
+    return JSON.stringify(output ?? null);
+  }
+
+  const rawResults: any[] = Array.isArray(output.results) ? output.results : [];
+  const seenUrls = new Set<string>();
+  const validResults: any[] = [];
+
+  for (const item of rawResults) {
+    if (item && isValidWebUrl(item.url)) {
+      const url = item.url.trim();
+      if (!seenUrls.has(url)) {
+        seenUrls.add(url);
+        validResults.push(item);
+      }
+    }
+  }
+
+  if (validResults.length === 0) {
+    return typeof output.message === "string"
+      ? output.message
+      : `No web search results found for "${output.query || ""}".`;
+  }
+
+  const sections: string[] = ["[WEB SOURCES]"];
+  validResults.forEach((item, index) => {
+    const idx = index + 1;
+    const title =
+      typeof item.title === "string" && item.title.trim()
+        ? item.title.trim()
+        : item.url.trim();
+    const url = item.url.trim();
+    const content =
+      typeof item.content === "string" ? item.content.trim() : "";
+
+    const lines = [`[${idx}] ${title}`, `URL: ${url}`];
+    if (content) {
+      lines.push(`Content: ${content}`);
+    }
+    sections.push(lines.join("\n"));
+  });
+
+  sections.push(WEB_SEARCH_CITATION_INSTRUCTIONS);
+
+  return sections.join("\n\n");
+}
