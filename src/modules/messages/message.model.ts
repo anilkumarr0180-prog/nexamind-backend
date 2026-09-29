@@ -115,19 +115,32 @@ const messageSchema = new Schema(
       type: [
         {
           _id: false,
+          type: {
+            type: String,
+            enum: ["document", "web"],
+            default: "document",
+          },
+          // Document citation fields
           attachmentId: {
             type: Schema.Types.ObjectId,
             ref: "Attachment",
-            required: true,
+            default: null,
           },
           filename: {
             type: String,
-            required: true,
             trim: true,
           },
           chunkIndex: {
             type: Number,
-            required: true,
+          },
+          // Web citation fields
+          title: {
+            type: String,
+            trim: true,
+          },
+          url: {
+            type: String,
+            trim: true,
           },
         },
       ],

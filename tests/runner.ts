@@ -182,6 +182,16 @@ const TEST_SUITES: TestSuite[] = [
     file: "agent-unit-conversion-tool.test.ts",
   },
   {
+    id: "agent-web-search-tool",
+    name: "Agent Core: Web Search Tool",
+    file: "agent-web-search-tool.test.ts",
+  },
+  {
+    id: "agent-startup-tool-loading",
+    name: "Agent Core: Startup Tool Loading",
+    file: "agent-startup-tool-loading.test.ts",
+  },
+  {
     id: "agent-loop",
     name: "Agent Core: Agent Loop",
     file: "agent-loop.test.ts",

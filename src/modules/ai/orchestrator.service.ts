@@ -1,5 +1,12 @@
 import { summarizeConversationIfNeeded } from "../conversations/conversation-summary.service.js";
-import { buildFullChatContext, type DocumentSourceCitation } from "./context-builder.service.js";
+import {
+  buildFullChatContext,
+  type DocumentSourceCitation,
+  type WebSourceCitation,
+  type ChatSourceCitation,
+} from "./context-builder.service.js";
+import { isValidWebUrl } from "../agent/tools/web-search.tool.js";
+import type { ToolCallInfo } from "../agent/agent.types.js";
 import type { Types } from "mongoose";
 import { env } from "../../config/env.js";
 import { AppError } from "../../errors/app.error.js";
@@ -132,15 +139,84 @@ export type OrchestratedChatResult = {
       outputTokens: number;
       totalTokens: number;
     } | null;
-    sources?: DocumentSourceCitation[] | null;
+    sources?: ChatSourceCitation[] | null;
     createdAt: Date;
   };
-  sources?: DocumentSourceCitation[] | null;
+  sources?: ChatSourceCitation[] | null;
   usage: {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
   } | null;
+};
+
+/**
+ * Extracts and deduplicates valid web sources from agent execution tool calls.
+ */
+export const extractWebSourcesFromToolCalls = (
+  toolCalls?: ToolCallInfo[] | undefined,
+): WebSourceCitation[] => {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
+    return [];
+  }
+  const sources: WebSourceCitation[] = [];
+  const seenUrls = new Set<string>();
+
+  for (const tc of toolCalls) {
+    if (tc.name === "web_search" && tc.result && typeof tc.result === "object") {
+      const output = tc.result as any;
+      if (Array.isArray(output.results)) {
+        for (const item of output.results) {
+          if (item && isValidWebUrl(item.url)) {
+            const url = item.url.trim();
+            if (!seenUrls.has(url)) {
+              seenUrls.add(url);
+              sources.push({
+                type: "web",
+                title:
+                  typeof item.title === "string" && item.title.trim()
+                    ? item.title.trim()
+                    : url,
+                url,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+  return sources;
+};
+
+/**
+ * Merges new sources into a target sources list without duplicates.
+ */
+export const mergeWebSources = (
+  target: ChatSourceCitation[],
+  newSources: ChatSourceCitation[],
+): void => {
+  for (const s of newSources) {
+    if (s.type === "web") {
+      if (
+        !target.some(
+          (t) => t.type === "web" && (t as WebSourceCitation).url === s.url,
+        )
+      ) {
+        target.push(s);
+      }
+    } else {
+      if (
+        !target.some(
+          (t) =>
+            t.type !== "web" &&
+            (t as DocumentSourceCitation).attachmentId === s.attachmentId &&
+            (t as DocumentSourceCitation).chunkIndex === s.chunkIndex,
+        )
+      ) {
+        target.push(s);
+      }
+    }
+  }
 };
 
 
@@ -331,7 +407,7 @@ export const processChatRequest = async (
     let assistantMessage:
       | Awaited<ReturnType<typeof messageRepository.createMessage>>
       | undefined;
-    let retrievedSources: DocumentSourceCitation[] = [];
+    let retrievedSources: ChatSourceCitation[] = [];
 
     try {
       // 5. Persist USER message
@@ -402,6 +478,11 @@ export const processChatRequest = async (
             502,
             "AI_PROVIDER_ERROR",
           );
+        }
+
+        const webSources = extractWebSourcesFromToolCalls(agentResult.toolCalls);
+        if (webSources.length > 0) {
+          mergeWebSources(retrievedSources, webSources);
         }
 
         aiResponse = {
@@ -612,7 +693,7 @@ export interface ChatStreamCallbacks {
   onChunk: (chunk: string) => void;
   onStatus?: (status: string, message: string) => void;
   onToolStatus?: (event: ToolStatusEvent) => void;
-  onSources?: (sources: DocumentSourceCitation[]) => void;
+  onSources?: (sources: ChatSourceCitation[]) => void;
 }
 
 export const processChatStream = async (
@@ -704,7 +785,7 @@ export const processChatStream = async (
     let capturedModel: string | null = null;
     let capturedUsage: AIUsage | null = null;
     let streamError: unknown = null;
-    let retrievedSources: DocumentSourceCitation[] = [];
+    let retrievedSources: ChatSourceCitation[] = [];
 
     try {
       // 5. Persist USER message
@@ -803,9 +884,21 @@ export const processChatStream = async (
                 callbacks.onChunk(chunk);
               }
             },
+            onSources: (sources) => {
+              mergeWebSources(retrievedSources, sources);
+              if (retrievedSources.length > 0) {
+                callbacks.onSources?.(retrievedSources);
+              }
+            },
           },
         },
       );
+
+      const webSources = extractWebSourcesFromToolCalls(agentResult.toolCalls);
+      if (webSources.length > 0) {
+        mergeWebSources(retrievedSources, webSources);
+        callbacks.onSources?.(retrievedSources);
+      }
 
       if (signal?.aborted || agentResult.status === AGENT_STATUSES.CANCELLED) {
         // Handled cleanly by signal.aborted check below; do not override empty fullAssistantContent

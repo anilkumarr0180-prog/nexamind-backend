@@ -215,6 +215,12 @@ export const envSchema = z
       .string()
       .trim()
       .min(1, "CLOUDINARY_API_SECRET is required"),
+
+    // Tavily Search Configuration
+    TAVILY_API_KEY: z
+      .string()
+      .trim()
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (

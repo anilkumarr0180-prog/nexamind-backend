@@ -10,6 +10,7 @@ import * as authService from "../src/modules/auth/auth.service.js";
 import * as tokenService from "../src/modules/tokens/token.service.js";
 import * as orchestratorService from "../src/modules/ai/orchestrator.service.js";
 import { toolRegistry } from "../src/modules/agent/tool.registry.js";
+import { webSearchTool } from "../src/modules/agent/tools/web-search.tool.js";
 import type {
   AIProvider,
   AIMessage,
@@ -90,6 +91,15 @@ class MockToolAwareAIProvider implements AIProvider {
       if (toolData.category && toolData.fromUnit && toolData.toUnit) {
         return {
           content: `Converted ${toolData.value} ${toolData.fromUnit} to ${toolData.result} ${toolData.toUnit}.`,
+          provider: "mock-tool-provider",
+          model: "mock-model",
+          usage: { inputTokens: 30, outputTokens: 20, totalTokens: 50 },
+        };
+      }
+
+      if (lastMsg.content.includes("[WEB SOURCES]") || (toolData.query && Array.isArray(toolData.results))) {
+        return {
+          content: `Web search returned results. The latest React version is 19.0.0 [1].`,
           provider: "mock-tool-provider",
           model: "mock-model",
           usage: { inputTokens: 30, outputTokens: 20, totalTokens: 50 },
@@ -187,6 +197,22 @@ class MockToolAwareAIProvider implements AIProvider {
         };
       }
 
+      if (webSearchTool.matchesQuery(query)) {
+        return {
+          content: "",
+          provider: "mock-tool-provider",
+          model: "mock-model",
+          usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+          toolCalls: [
+            {
+              id: "call_web_search_test_1",
+              name: "web_search",
+              arguments: { query },
+            },
+          ],
+        };
+      }
+
       let expression = "1542 * 38";
       if (query.includes("10 / 0")) {
         expression = "10 / 0";
@@ -242,6 +268,8 @@ class MockToolAwareAIProvider implements AIProvider {
         text = `The current time in ${toolData.timezone || "UTC"} is ${toolData.time} on ${toolData.date} (${toolData.dayOfWeek}).`;
       } else if (toolData.category && toolData.fromUnit && toolData.toUnit) {
         text = `Converted ${toolData.value} ${toolData.fromUnit} to ${toolData.result} ${toolData.toUnit}.`;
+      } else if (lastMsg.content.includes("[WEB SOURCES]") || (toolData.query && Array.isArray(toolData.results))) {
+        text = `Web search confirmed latest Node.js release is v22.0.0 [1].`;
       } else {
         text = `The calculated answer is ${toolData.result}.`;
       }
@@ -279,6 +307,36 @@ const runTests = async () => {
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 5000;
   const baseUrl = `http://127.0.0.1:${port}`;
+
+  const originalFetch = globalThis.fetch;
+  const originalTavilyKey = process.env.TAVILY_API_KEY;
+  process.env.TAVILY_API_KEY = "test-tavily-mock-key";
+  globalThis.fetch = async (input, init) => {
+    const urlStr =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    if (urlStr.includes("api.tavily.com")) {
+      return new Response(
+        JSON.stringify({
+          query: "What is the latest React version?",
+          results: [
+            {
+              title: "React v19 is now available",
+              url: "https://react.dev/blog/2024/12/05/react-19",
+              content:
+                "React 19 is now available on npm with Actions and useOptimistic.",
+              score: 0.99,
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return originalFetch(input, init);
+  };
 
   const testId = Date.now();
   const userAEmail = `chat_tools_user_a_${testId}@example.com`;
@@ -854,13 +912,27 @@ const runTests = async () => {
     }
 
     // -------------------------------------------------------------
-    // Test 17: Multi-Tool Isolation (Calculator, DateTime, UnitConversion)
+    // Test 17: Multi-Tool Isolation (Calculator, DateTime, UnitConversion, WebSearch)
     // -------------------------------------------------------------
-    console.log("\n[Test 17] Verifying distinct tool selection across Calculator, DateTime, and UnitConversion...");
+    console.log("\n[Test 17] Verifying distinct tool selection across Calculator, DateTime, UnitConversion, and WebSearch...");
     {
+      // 1. "What is the latest React version?" → Web Search/tool path is selected.
+      assert.equal(toolRegistry.isToolRequired("What is the latest React version?"), true);
+      // 2. "Search the web for the latest Node.js release." → Web Search/tool path is selected.
+      assert.equal(toolRegistry.isToolRequired("Search the web for the latest Node.js release."), true);
+      // 3. "What happened in AI news today?" → Web Search/tool path is selected.
+      assert.equal(toolRegistry.isToolRequired("What happened in AI news today?"), true);
+      // 4. "Explain JavaScript closures." → Web Search is NOT selected.
+      assert.equal(toolRegistry.isToolRequired("Explain JavaScript closures."), false);
+      // 5. "What is a REST API?" → Web Search is NOT selected.
+      assert.equal(toolRegistry.isToolRequired("What is a REST API?"), false);
+      // 6. Existing calculator intent still works.
       assert.equal(toolRegistry.isToolRequired("Calculate 1542 * 38"), true);
+      // 7. Existing DateTime intent still works.
       assert.equal(toolRegistry.isToolRequired("What time is it?"), true);
+      // 8. Existing Unit Conversion intent still works.
       assert.equal(toolRegistry.isToolRequired("Convert 10 km to miles"), true);
+
       assert.equal(toolRegistry.isToolRequired("What is JavaScript?"), false);
       assert.equal(toolRegistry.isToolRequired("Explain React hooks"), false);
       assert.equal(toolRegistry.isToolRequired("Tell me about MongoDB"), false);
@@ -891,10 +963,172 @@ const runTests = async () => {
       console.log("✓ Test 18 Passed: Explicit /api/v1/agent/run executed UnitConversionTool seamlessly");
     }
 
+    // -------------------------------------------------------------
+    // Test 19: Normal chat triggering WebSearchTool (non-streaming)
+    // -------------------------------------------------------------
+    console.log("\n[Test 19] Normal chat requiring WebSearchTool (What is the latest React version?)...");
+    {
+      const balanceBefore = await tokenService.getBalance(userAId);
+      mockProvider.calls = [];
+
+      const res = await fetch(`${baseUrl}/api/v1/ai/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${userAToken}`,
+        },
+        body: JSON.stringify({
+          conversationId: convAId,
+          content: "What is the latest React version?",
+        }),
+      });
+
+      assert.equal(res.status, 200, "Should return 200 OK");
+      const json = await res.json();
+      assert.equal(json.success, true);
+      assert.ok(
+        json.data.assistantMessage.content.includes("19.0.0"),
+        "Response must contain search result version 19.0.0",
+      );
+
+      // Verify web sources in assistantMessage response
+      assert.ok(Array.isArray(json.data.assistantMessage.sources), "Assistant message must contain sources");
+      assert.equal(json.data.assistantMessage.sources.length, 1);
+      assert.equal(json.data.assistantMessage.sources[0].type, "web");
+      assert.equal(json.data.assistantMessage.sources[0].url, "https://react.dev/blog/2024/12/05/react-19");
+      assert.equal(json.data.assistantMessage.sources[0].title, "React v19 is now available");
+
+      // Verify web sources in top-level result
+      assert.ok(Array.isArray(json.data.sources), "Top-level result must contain sources");
+      assert.equal(json.data.sources[0].type, "web");
+      assert.equal(json.data.sources[0].url, "https://react.dev/blog/2024/12/05/react-19");
+
+      // Verify loaded message from DB contains web sources
+      const loadedMsg = await Message.findById(json.data.assistantMessage.id);
+      assert.ok(loadedMsg, "Message must exist in DB");
+      assert.ok(Array.isArray((loadedMsg as any).sources));
+      assert.equal((loadedMsg as any).sources[0].type, "web");
+      assert.equal((loadedMsg as any).sources[0].url, "https://react.dev/blog/2024/12/05/react-19");
+
+      const balanceAfter = await tokenService.getBalance(userAId);
+      assert.equal(
+        balanceBefore.balance - balanceAfter.balance,
+        1,
+        "Credits deducted exactly once for WebSearchTool chat",
+      );
+      console.log("✓ Test 19 Passed: Normal chat executed WebSearchTool, propagated web sources, and persisted to DB");
+    }
+
+    // -------------------------------------------------------------
+    // Test 20: Normal chat triggering WebSearchTool (STREAMING)
+    // -------------------------------------------------------------
+    console.log("\n[Test 20] Normal chat requiring WebSearchTool (streaming: Search the web for the latest Node.js release)...");
+    {
+      const balanceBefore = await tokenService.getBalance(userAId);
+
+      const res = await fetch(`${baseUrl}/api/v1/ai/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          Authorization: `Bearer ${userAToken}`,
+        },
+        body: JSON.stringify({
+          conversationId: convAId,
+          content: "Search the web for the latest Node.js release.",
+          stream: true,
+        }),
+      });
+
+      assert.equal(res.status, 200);
+      assert.ok(res.headers.get("content-type")?.includes("text/event-stream"));
+
+      const text = await res.text();
+      const events: any[] = [];
+      for (const line of text.split("\n")) {
+        if (line.startsWith("data: ")) {
+          try {
+            events.push(JSON.parse(line.slice(6)));
+          } catch {}
+        }
+      }
+
+      const types = events.map((e) => e.type);
+      assert.ok(types.includes("start"), "Must include start event");
+      assert.ok(types.includes("status"), "Must include status event");
+      assert.ok(types.includes("tool_status"), "Must include tool_status event");
+      assert.ok(types.includes("sources"), "Must include sources event");
+      assert.ok(types.includes("chunk"), "Must include chunk event");
+      assert.ok(types.includes("done"), "Must include done event");
+
+      const sourcesEvent = events.find((e) => e.type === "sources");
+      assert.ok(sourcesEvent && Array.isArray(sourcesEvent.sources), "Streaming must emit sources payload");
+      assert.equal(sourcesEvent.sources[0].type, "web");
+      assert.equal(sourcesEvent.sources[0].url, "https://react.dev/blog/2024/12/05/react-19");
+
+      const toolEvents = events.filter((e) => e.type === "tool_status");
+      assert.ok(
+        toolEvents.some((e) => e.tool === "web_search" && e.status === "running"),
+        "Emits web_search tool running",
+      );
+      assert.ok(
+        toolEvents.some((e) => e.tool === "web_search" && e.status === "completed"),
+        "Emits web_search tool completed",
+      );
+
+      const balanceAfter = await tokenService.getBalance(userAId);
+      assert.equal(
+        balanceBefore.balance - balanceAfter.balance,
+        1,
+        "Credits deducted exactly once for streaming WebSearch chat",
+      );
+      console.log("✓ Test 20 Passed: Streaming normal chat emitted tool_status and sources event for web_search");
+    }
+
+    // -------------------------------------------------------------
+    // Test 21: Ordinary informational query (Explain JavaScript closures.) does NOT trigger web_search
+    // -------------------------------------------------------------
+    console.log("\n[Test 21] Ordinary informational query (Explain JavaScript closures.) does NOT trigger web_search...");
+    {
+      const balanceBefore = await tokenService.getBalance(userAId);
+      mockProvider.calls = [];
+
+      const res = await fetch(`${baseUrl}/api/v1/ai/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${userAToken}`,
+        },
+        body: JSON.stringify({
+          conversationId: convAId,
+          content: "Explain JavaScript closures.",
+        }),
+      });
+
+      assert.equal(res.status, 200);
+      const json = await res.json();
+      assert.equal(json.success, true);
+      assert.equal(
+        json.data.assistantMessage.content,
+        "Standard response without any tools.",
+        "Should return direct provider response without tool calls",
+      );
+
+      const balanceAfter = await tokenService.getBalance(userAId);
+      assert.equal(balanceBefore.balance - balanceAfter.balance, 1, "Credits deducted exactly once");
+      console.log("✓ Test 21 Passed: Informational query bypassed tool loop and did not invoke web_search");
+    }
+
     console.log("\n==================================================");
-    console.log(" ALL 18 INTEGRATION SCENARIOS PASSED (18/18)     ");
+    console.log(" ALL 21 INTEGRATION SCENARIOS PASSED (21/21)     ");
     console.log("==================================================");
   } finally {
+    globalThis.fetch = originalFetch;
+    if (originalTavilyKey !== undefined) {
+      process.env.TAVILY_API_KEY = originalTavilyKey;
+    } else {
+      delete process.env.TAVILY_API_KEY;
+    }
     if (userAId) {
       await TokenBalance.deleteMany({ userId: { $in: [userAId, userBId] } });
       await Conversation.deleteMany({ _id: convAId });
