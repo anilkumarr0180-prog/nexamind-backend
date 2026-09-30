@@ -588,70 +588,18 @@ export class AgentLoop {
       // Step 5: Model returned normal content (no tool calls) -> Final response generation
       callbacks?.onStatus?.("generating", "Generating response...");
 
-      // If progressive streaming requested and provider supports streaming:
-      if (callbacks?.onChunk && typeof this.provider.generateChatStream === "function") {
-        let streamedContent = "";
-        try {
-          for await (const chunk of this.provider.generateChatStream(
-            state.messages,
-            chatOptions,
-            signal,
-          )) {
-            if (signal?.aborted) {
-              break;
-            }
-            if (chunk.content) {
-              streamedContent += chunk.content;
-              callbacks.onChunk(chunk.content);
-            }
-            if (chunk.usage) {
-              state.usage.inputTokens += chunk.usage.inputTokens || 0;
-              state.usage.outputTokens += chunk.usage.outputTokens || 0;
-              state.usage.totalTokens += chunk.usage.totalTokens || 0;
-            }
-          }
-        } catch (streamError: unknown) {
-          if (signal?.aborted) {
-            // Aborted cleanly during stream
-          } else {
-            if (!streamedContent && response.content) {
-              streamedContent = response.content;
-              callbacks.onChunk(streamedContent);
-            } else {
-              throw streamError;
-            }
-          }
-        }
+      // Clean think tags if any exist in the response content
+      let finalContent = response.content || "";
+      if (finalContent.includes("</think>") || finalContent.startsWith("Thinking:")) {
+        finalContent = finalContent
+          .replace(/<think>[\s\S]*?<\/think>/gi, "")
+          .replace(/^Thinking:[\s\S]*?<\/think>/gi, "")
+          .trim();
+      }
 
-        if (signal?.aborted) {
-          const completedAt = new Date();
-          state.status = AGENT_STATUSES.CANCELLED;
-          state.output = streamedContent.trim() ? streamedContent : undefined;
-          state.completedAt = completedAt;
-          state.updatedAt = completedAt;
-          return {
-            executionId: state.id,
-            userId: state.userId,
-            task: state.task,
-            status: AGENT_STATUSES.CANCELLED,
-            output: state.output ?? null,
-            stepsCompleted: state.currentStep + 1,
-            toolCalls: state.toolCalls,
-            usage: state.usage,
-            startedAt: state.startedAt,
-            completedAt,
-            durationMs: Math.max(0, completedAt.getTime() - startTime),
-            conversationId: state.conversationId,
-            metadata: state.metadata,
-          };
-        }
-
-        state.output = streamedContent || response.content;
-      } else {
-        state.output = response.content;
-        if (callbacks?.onChunk && response.content) {
-          callbacks.onChunk(response.content);
-        }
+      state.output = finalContent || response.content;
+      if (callbacks?.onChunk && state.output) {
+        callbacks.onChunk(state.output);
       }
 
       state.currentStep += 1;

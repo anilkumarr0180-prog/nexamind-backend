@@ -18,6 +18,7 @@ type GroqChatCompletionResponse = {
     message: {
       role: string;
       content: string | null;
+      reasoning?: string | null;
       tool_calls?: Array<{
         id: string;
         type: string;
@@ -41,8 +42,8 @@ type GroqChatCompletionResponse = {
   };
 };
 
-export const DEFAULT_RECOMMENDED_MODEL = "qwen/qwen3.8-27b";
-export const FALLBACK_MODEL = "openai/gpt-oss-20b";
+export const DEFAULT_RECOMMENDED_MODEL = "openai/gpt-oss-20b";
+export const FALLBACK_MODEL = "openai/gpt-oss-120b";
 export const MAX_PROVIDER_ATTEMPTS = 2;
 
 export interface GroqChatOptions extends ChatResponseOptions {
@@ -55,11 +56,17 @@ export function resolveValidModel(rawModel?: string): string {
   if (m.includes("llama-3") || m.includes("llama3")) {
     return DEFAULT_RECOMMENDED_MODEL;
   }
+  if (m.includes("gpt-oss-20b")) {
+    return "openai/gpt-oss-20b";
+  }
+  if (m.includes("gpt-oss-120b")) {
+    return "openai/gpt-oss-120b";
+  }
   if (m.includes("qwen")) {
-    return "qwen/qwen3.8-27b";
+    return DEFAULT_RECOMMENDED_MODEL;
   }
   if (m.includes("gpt-oss") || m.includes("compound")) {
-    return FALLBACK_MODEL;
+    return DEFAULT_RECOMMENDED_MODEL;
   }
   return rawModel.trim();
 }
@@ -122,7 +129,15 @@ export function formatGroqMessages(
   isVisionModel: boolean = true,
 ): Array<Record<string, unknown>> {
   const sanitized = messages.map((m) => {
-    let content: unknown = typeof m.content === "string" ? m.content.slice(0, 8000) : "";
+    let content: unknown = m.content;
+    if (typeof content === "string") {
+      if (m.role === "assistant") {
+        content = content.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^Thinking:[\s\S]*?<\/think>/gi, "").trim();
+      }
+      content = (content as string).slice(0, 8000);
+    } else {
+      content = "";
+    }
 
     if (m.imageUrl && m.role === "user") {
       if (isVisionModel) {
@@ -205,15 +220,15 @@ export class GroqProvider implements AIProvider {
       );
     }
 
-    const hasVision = messages.some((m) => Boolean(m.imageUrl));
+    const hasVision = Boolean(messages[messages.length - 1]?.imageUrl);
     const attemptedModels = [...(options?._attemptedModels ?? [])];
     let targetModel = hasVision
       ? "qwen/qwen3.8-27b"
       : resolveValidModel(options?.model ?? this.defaultModel);
     attemptedModels.push(targetModel);
 
-    // Strict safe output token clamping (600 tokens max) to guarantee pre-flight OTPM limits
-    const maxTokens = options?.maxTokens ?? 600;
+    // Balanced safe default tokens: 900 tokens (gives ~700 words, safely stays within TPM bucket)
+    const maxTokens = options?.maxTokens ?? 1200;
 
     const isVisionModel = targetModel === "qwen/qwen3.8-27b";
     const sanitizedMessages = formatGroqMessages(messages, isVisionModel);
@@ -224,6 +239,7 @@ export class GroqProvider implements AIProvider {
       model: targetModel,
       messages: budgetedMessages,
       max_tokens: maxTokens,
+      reasoning_format: "hidden",
       stream: false,
     };
 
@@ -275,7 +291,7 @@ export class GroqProvider implements AIProvider {
             return this.generateChatResponse(messages, {
               ...options,
               model: DEFAULT_RECOMMENDED_MODEL,
-              maxTokens: 600,
+              maxTokens: Math.max(maxTokens, 1500),
               _attemptedModels: attemptedModels,
             });
           }
@@ -303,13 +319,18 @@ export class GroqProvider implements AIProvider {
 
         // 3. Rate limit (429): bounded fallback retry, never cycle back to attempted models
         if (response.status === 429) {
-          if (hasVision) {
-            throw new AppError(
-              "Groq vision AI is currently rate-limited. Please wait a few seconds and try again.",
-              429,
-              "RATE_LIMIT_EXCEEDED",
-            );
+
+          const waitMatch = errorMsg.match(/try again in ([\d\.]+)s/i);
+          const waitSeconds = waitMatch && waitMatch[1] ? parseFloat(waitMatch[1]) : 0;
+          if (waitSeconds > 0 && waitSeconds <= 4 && !(options as any)?._alreadyWaited) {
+            console.warn(`[GroqProvider] Short rate-limit wait of ${waitSeconds}s. Backing off...`);
+            await new Promise((resolve) => setTimeout(resolve, Math.ceil(waitSeconds * 1000) + 300));
+            return this.generateChatResponse(messages, {
+              ...options,
+              _alreadyWaited: true,
+            } as any);
           }
+
           const fallbackCandidate =
             targetModel === DEFAULT_RECOMMENDED_MODEL ? FALLBACK_MODEL : DEFAULT_RECOMMENDED_MODEL;
 
@@ -324,7 +345,7 @@ export class GroqProvider implements AIProvider {
             return this.generateChatResponse(messages, {
               ...options,
               model: fallbackCandidate,
-              maxTokens: 500,
+              maxTokens: Math.max(maxTokens, 800),
               _attemptedModels: attemptedModels,
             });
           }
@@ -335,6 +356,17 @@ export class GroqProvider implements AIProvider {
             429,
             "RATE_LIMIT_EXCEEDED",
           );
+        }
+
+        if (response.status === 400 && errorMsg.includes("Tool choice is none")) {
+          console.warn(`[GroqProvider] Model ${targetModel} attempted tool call without tools. Retrying with gpt-oss-20b...`);
+          if (targetModel !== "openai/gpt-oss-20b" && !attemptedModels.includes("openai/gpt-oss-20b")) {
+            return this.generateChatResponse(messages, {
+              ...options,
+              model: "openai/gpt-oss-20b",
+              _attemptedModels: [...attemptedModels, "openai/gpt-oss-20b"],
+            });
+          }
         }
 
         if (response.status === 401) {
@@ -389,10 +421,32 @@ export class GroqProvider implements AIProvider {
         }
       }
 
-      const content = firstChoice.message.content ?? "";
+      let content = firstChoice.message.content ?? "";
+
+      // Fallback to reasoning if content is empty (e.g. reasoning token exhaustion or model format)
+      if (!content.trim() && firstChoice.message.reasoning) {
+        content = firstChoice.message.reasoning.trim();
+      }
 
       // Only treat as error if content is empty AND no valid tool calls were returned
       if (!content.trim() && (!parsedToolCalls || parsedToolCalls.length === 0)) {
+        const canFallback =
+          targetModel !== FALLBACK_MODEL &&
+          !attemptedModels.includes(FALLBACK_MODEL) &&
+          attemptedModels.length < MAX_PROVIDER_ATTEMPTS;
+
+        if (firstChoice.finish_reason === "length" && canFallback) {
+          console.warn(
+            `[GroqProvider] Model "${targetModel}" reached length limit with empty content. Retrying with fallback model ${FALLBACK_MODEL}...`,
+          );
+          return this.generateChatResponse(messages, {
+            ...options,
+            model: FALLBACK_MODEL,
+            maxTokens: Math.max(maxTokens, 2048),
+            _attemptedModels: attemptedModels,
+          });
+        }
+
         throw new AppError(
           "Groq returned an empty response",
           502,
@@ -456,14 +510,14 @@ export class GroqProvider implements AIProvider {
       );
     }
 
-    const hasVision = messages.some((m) => Boolean(m.imageUrl));
+    const hasVision = Boolean(messages[messages.length - 1]?.imageUrl);
     const attemptedModels = [...(options?._attemptedModels ?? [])];
     let targetModel = hasVision
       ? "qwen/qwen3.8-27b"
       : resolveValidModel(options?.model ?? this.defaultModel);
     attemptedModels.push(targetModel);
 
-    const maxTokens = options?.maxTokens ?? 600;
+    const maxTokens = options?.maxTokens ?? 1200;
 
     const isVisionModel = targetModel === "qwen/qwen3.8-27b";
     const sanitizedMessages = formatGroqMessages(messages, isVisionModel);
@@ -474,6 +528,7 @@ export class GroqProvider implements AIProvider {
       model: targetModel,
       messages: budgetedMessages,
       max_tokens: maxTokens,
+      reasoning_format: "hidden",
       stream: true,
       stream_options: { include_usage: true },
     };
@@ -560,7 +615,7 @@ export class GroqProvider implements AIProvider {
             {
               ...options,
               model: DEFAULT_RECOMMENDED_MODEL,
-              maxTokens: 600,
+              maxTokens: Math.max(maxTokens, 1500),
               _attemptedModels: attemptedModels,
             },
             signal,
@@ -590,13 +645,23 @@ export class GroqProvider implements AIProvider {
 
       // 3. Rate limit (429): bounded fallback retry, never cycle back to attempted models
       if (response.status === 429) {
-        if (hasVision) {
-          throw new AppError(
-            "Groq vision AI is currently rate-limited. Please wait a few seconds and try again.",
-            429,
-            "RATE_LIMIT_EXCEEDED",
+
+        const waitMatch = errorMsg.match(/try again in ([\d\.]+)s/i);
+        const waitSeconds = waitMatch && waitMatch[1] ? parseFloat(waitMatch[1]) : 0;
+        if (waitSeconds > 0 && waitSeconds <= 4 && !(options as any)?._alreadyWaited) {
+          console.warn(`[GroqProvider] Short stream rate-limit wait of ${waitSeconds}s. Backing off...`);
+          await new Promise((resolve) => setTimeout(resolve, Math.ceil(waitSeconds * 1000) + 300));
+          yield* this.generateChatStream(
+            messages,
+            {
+              ...options,
+              _alreadyWaited: true,
+            } as any,
+            signal,
           );
+          return;
         }
+
         const fallbackCandidate =
           targetModel === DEFAULT_RECOMMENDED_MODEL ? FALLBACK_MODEL : DEFAULT_RECOMMENDED_MODEL;
 
@@ -613,7 +678,7 @@ export class GroqProvider implements AIProvider {
             {
               ...options,
               model: fallbackCandidate,
-              maxTokens: 500,
+              maxTokens: Math.max(maxTokens, 800),
               _attemptedModels: attemptedModels,
             },
             signal,
@@ -693,7 +758,7 @@ export class GroqProvider implements AIProvider {
                 throw new AppError(errorMsg, 502, "AI_PROVIDER_ERROR");
               }
 
-              const deltaContent = parsed.choices?.[0]?.delta?.content;
+              const deltaContent = parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.delta?.reasoning;
               const usage = parsed.usage
                 ? {
                     inputTokens: parsed.usage.prompt_tokens ?? 0,
@@ -754,7 +819,7 @@ export class GroqProvider implements AIProvider {
                 throw new AppError(errorMsg, 502, "AI_PROVIDER_ERROR");
               }
 
-              const deltaContent = parsed.choices?.[0]?.delta?.content;
+              const deltaContent = parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.delta?.reasoning;
               const usage = parsed.usage
                 ? {
                     inputTokens: parsed.usage.prompt_tokens ?? 0,
