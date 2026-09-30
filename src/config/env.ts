@@ -70,7 +70,7 @@ export const envSchema = z
     AI_MODEL: z
       .string()
       .trim()
-      .default("qwen/qwen3.8-27b"),
+      .default("openai/gpt-oss-20b"),
 
     AI_BASE_URL: z
       .string()
