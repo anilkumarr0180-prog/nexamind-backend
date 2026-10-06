@@ -38,7 +38,11 @@ export const MAX_ALLOWED_STEPS = 25;
 export const MIN_ALLOWED_STEPS = 1;
 
 export const DEFAULT_AGENT_SYSTEM_PROMPT =
-  "You are NexaMind Agent, an intelligent autonomous agent capable of solving tasks using tools. When tools are available (such as calculator), you MUST use them to perform accurate calculations and operations.";
+  "You are NexaMind Agent, an intelligent autonomous agent capable of solving complex tasks step-by-step using available tools.\n" +
+  "1. When a task requires current, real-time, or external facts (such as exchange rates, live market data, or news), use the web_search tool first.\n" +
+  "2. When a task requires calculations, arithmetic, or unit conversions, use the calculator or unit_conversion tools to compute exact values.\n" +
+  "3. Chain tools sequentially across steps as needed: obtain necessary facts first, then calculate results using the retrieved numbers, and finally provide a comprehensive, clear answer with citations where appropriate.\n" +
+  "4. If a tool call fails or returns an error, do not repeat the exact same invalid call; adapt your strategy or answer using available information.";
 
 /**
  * Options for configuring an AgentService instance.
@@ -279,6 +283,7 @@ export class AgentService {
                 totalTokens: result.usage.totalTokens,
               }
             : null,
+          sources: (result.sources && result.sources.length > 0) ? (result.sources as any) : null,
         });
 
         const totalMessages = (activeConversation.messageCount || 0) + 2;

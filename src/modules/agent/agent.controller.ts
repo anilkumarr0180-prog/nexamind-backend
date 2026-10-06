@@ -120,10 +120,28 @@ export const handleExecuteAgentStream = async (
             res.write(`data: ${JSON.stringify({ type: "status", status, message })}\n\n`);
           }
         },
+        onPlan: (plan) => {
+          sendHeaders();
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: "plan", plan })}\n\n`);
+          }
+        },
         onToolStatus: (toolStatus) => {
           sendHeaders();
           if (!res.writableEnded) {
             res.write(`data: ${JSON.stringify({ type: "tool_status", ...toolStatus })}\n\n`);
+          }
+        },
+        onTrace: (trace) => {
+          sendHeaders();
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: "trace", trace })}\n\n`);
+          }
+        },
+        onSources: (sources) => {
+          sendHeaders();
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: "sources", sources })}\n\n`);
           }
         },
         onChunk: (chunk) => {

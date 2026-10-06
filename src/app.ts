@@ -15,6 +15,7 @@ import agentRoutes from "./modules/agent/agent.routes.js";
 import planRoutes from "./modules/plans/plan.routes.js";
 import subscriptionRoutes from "./modules/subscriptions/subscription.routes.js";
 import attachmentRoutes from "./modules/attachments/attachment.routes.js";
+import voiceRoutes from "./modules/voice/voice.routes.js";
 import { polarWebhookHandler } from "./modules/subscriptions/webhook.controller.js";
 
 import { errorHandler } from "./middleware/error-handler.js";
@@ -70,6 +71,7 @@ app.use("/api/v1/agent", agentRoutes);
 app.use("/api/v1/plans", planRoutes);
 app.use("/api/v1/subscriptions", subscriptionRoutes);
 app.use("/api/v1/attachments", attachmentRoutes);
+app.use("/api/v1/voice", voiceRoutes);
 
 app.use(errorHandler);
 

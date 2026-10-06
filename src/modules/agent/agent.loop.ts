@@ -12,7 +12,10 @@ import {
   type AgentExecutionInput,
   type AgentExecutionResult,
   type AgentExecutionState,
+  type AgentPlan,
+  type PlanStep,
   type AgentRunOptions,
+  type AgentTraceStep,
   TOOL_CALL_STATUSES,
   type ToolCallInfo,
   type ToolCallResult,
@@ -32,6 +35,34 @@ import { WEB_SEARCH_CITATION_INSTRUCTIONS } from "../ai/prompts/system.prompt.js
 export const MAX_WEB_SEARCHES_PER_REQUEST = 2;
 
 /**
+ * Maximum times a tool call with the exact same name and arguments can fail
+ * before repeated calls are blocked to prevent infinite loops.
+ */
+export const MAX_REPEATED_TOOL_FAILURES = 2;
+
+/**
+ * Maximum consecutive failed tool steps permitted before prompting the model
+ * to synthesize a final answer using available knowledge.
+ */
+export const MAX_CONSECUTIVE_TOOL_FAILURES = 3;
+
+/**
+ * Normalizes tool arguments into a stable deterministic key for failure tracking.
+ */
+export function getToolCallKey(toolName: string, args: Record<string, unknown>): string {
+  try {
+    const keys = Object.keys(args || {}).sort();
+    const sortedObj: Record<string, unknown> = {};
+    for (const k of keys) {
+      sortedObj[k] = args[k];
+    }
+    return `${toolName.toLowerCase().trim()}:${JSON.stringify(sortedObj)}`;
+  } catch {
+    return `${toolName.toLowerCase().trim()}:${JSON.stringify(args || {})}`;
+  }
+}
+
+/**
  * Normalizes a web search query for exact deduplication within an agent request.
  * Trims surrounding whitespace, collapses internal whitespace, and converts to lowercase.
  */
@@ -40,6 +71,62 @@ export function normalizeWebSearchQuery(query: unknown): string {
     return "";
   }
   return query.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Formats a user-safe concise title for a tool execution step.
+ */
+export function formatToolStepTitle(toolName: string): string {
+  switch (toolName.toLowerCase().trim()) {
+    case "web_search":
+      return "Search current information";
+    case "calculator":
+      return "Calculate the result";
+    case "unit_conversion":
+      return "Convert measurement units";
+    case "datetime":
+      return "Check date and time";
+    default:
+      return `Execute ${toolName}`;
+  }
+}
+
+/**
+ * Builds an initial plan / intent sequence from task intent and registered tools
+ * during the first turn without requiring an extra LLM call.
+ */
+export function buildInitialPlan(task: string, registry: ToolRegistry): AgentPlan {
+  const steps: PlanStep[] = [];
+  let stepCounter = 1;
+
+  const checkOrder = ["web_search", "unit_conversion", "calculator", "datetime"];
+  for (const name of checkOrder) {
+    const tool = registry.get(name);
+    if (tool && typeof tool.matchesQuery === "function" && tool.matchesQuery(task)) {
+      steps.push({
+        id: `plan-step-${stepCounter++}`,
+        title: formatToolStepTitle(name),
+        status: "pending",
+        tool: name,
+      });
+    }
+  }
+
+  if (steps.length === 0) {
+    steps.push({
+      id: `plan-step-${stepCounter++}`,
+      title: "Analyze request and determine steps",
+      status: "pending",
+    });
+  }
+
+  steps.push({
+    id: `plan-step-${stepCounter++}`,
+    title: "Generate the answer",
+    status: "pending",
+  });
+
+  return { steps };
 }
 
 /**
@@ -97,6 +184,7 @@ export class AgentLoop {
         output: null,
         stepsCompleted: 0,
         toolCalls: [],
+        trace: [],
         usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
         startedAt: new Date(startTime),
         completedAt: now,
@@ -114,6 +202,7 @@ export class AgentLoop {
         : 10;
 
     // Step 2: Initialize execution state with RUNNING status
+    const initialPlan = buildInitialPlan(input.task.trim(), this.registry);
     const state: AgentExecutionState = {
       id: executionId,
       userId: input.userId.trim(),
@@ -123,6 +212,9 @@ export class AgentLoop {
       maxSteps,
       messages: [],
       toolCalls: [],
+      trace: [],
+      sources: [],
+      plan: initialPlan,
       usage: {
         inputTokens: 0,
         outputTokens: 0,
@@ -137,11 +229,18 @@ export class AgentLoop {
     // Track fresh external web_search executions during this request
     let freshWebSearchesCount = 0;
 
+    // Track tool failure occurrences to prevent infinite retry loops
+    const failedToolCallCounts = new Map<string, number>();
+    let consecutiveFailedSteps = 0;
+
     // Emit safe initial lifecycle events
     callbacks?.onStart?.({
       conversationId: state.conversationId,
     });
     callbacks?.onStatus?.("started", "Working...");
+    if (state.plan) {
+      callbacks?.onPlan?.(state.plan);
+    }
 
     // Immediate cancellation check
     if (signal?.aborted) {
@@ -149,6 +248,14 @@ export class AgentLoop {
       state.status = AGENT_STATUSES.CANCELLED;
       state.completedAt = completedAt;
       state.updatedAt = completedAt;
+      if (state.plan) {
+        state.plan.steps.forEach((s) => {
+          if (s.status === "pending" || s.status === "running") {
+            s.status = "skipped";
+          }
+        });
+        callbacks?.onPlan?.(state.plan);
+      }
       return {
         executionId: state.id,
         userId: state.userId,
@@ -157,6 +264,9 @@ export class AgentLoop {
         output: null,
         stepsCompleted: 0,
         toolCalls: [],
+        trace: state.trace,
+        sources: state.sources,
+        plan: state.plan,
         usage: state.usage,
         startedAt: state.startedAt,
         completedAt,
@@ -166,8 +276,7 @@ export class AgentLoop {
       };
     }
 
-    // Prepare initial conversation messages:
-    // Deduplicate and combine system prompts cleanly into a single unified system prompt at index 0.
+    // Prepare initial conversation messages
     const rawInitialMessages = input.initialMessages || [];
     const nonSystemInitialMessages = rawInitialMessages.filter(
       (m) => m.role !== "system",
@@ -234,6 +343,14 @@ export class AgentLoop {
         state.status = AGENT_STATUSES.CANCELLED;
         state.completedAt = completedAt;
         state.updatedAt = completedAt;
+        if (state.plan) {
+          state.plan.steps.forEach((s) => {
+            if (s.status === "pending" || s.status === "running") {
+              s.status = "skipped";
+            }
+          });
+          callbacks?.onPlan?.(state.plan);
+        }
         return {
           executionId: state.id,
           userId: state.userId,
@@ -242,6 +359,9 @@ export class AgentLoop {
           output: state.output ?? null,
           stepsCompleted: state.currentStep,
           toolCalls: state.toolCalls,
+          trace: state.trace,
+          sources: state.sources,
+          plan: state.plan,
           usage: state.usage,
           startedAt: state.startedAt,
           completedAt,
@@ -268,6 +388,14 @@ export class AgentLoop {
           state.status = AGENT_STATUSES.CANCELLED;
           state.completedAt = completedAt;
           state.updatedAt = completedAt;
+          if (state.plan) {
+            state.plan.steps.forEach((s) => {
+              if (s.status === "pending" || s.status === "running") {
+                s.status = "skipped";
+              }
+            });
+            callbacks?.onPlan?.(state.plan);
+          }
           return {
             executionId: state.id,
             userId: state.userId,
@@ -276,6 +404,9 @@ export class AgentLoop {
             output: state.output ?? null,
             stepsCompleted: state.currentStep,
             toolCalls: state.toolCalls,
+            trace: state.trace,
+            sources: state.sources,
+            plan: state.plan,
             usage: state.usage,
             startedAt: state.startedAt,
             completedAt,
@@ -300,6 +431,28 @@ export class AgentLoop {
         state.completedAt = completedAt;
         state.updatedAt = completedAt;
 
+        if (state.plan) {
+          state.plan.steps.forEach((s) => {
+            if (s.status === "running") {
+              s.status = "failed";
+              s.error = errorMessage;
+            } else if (s.status === "pending") {
+              s.status = "skipped";
+            }
+          });
+          callbacks?.onPlan?.(state.plan);
+        }
+
+        const errorTrace: AgentTraceStep = {
+          step: state.currentStep + 1,
+          type: "error",
+          error: errorMessage,
+          status: "failed",
+          durationMs,
+          timestamp: completedAt.toISOString(),
+        };
+        state.trace.push(errorTrace);
+        callbacks?.onTrace?.(errorTrace);
         callbacks?.onError?.(error);
 
         return {
@@ -310,6 +463,9 @@ export class AgentLoop {
           output: null,
           stepsCompleted: state.currentStep,
           toolCalls: state.toolCalls,
+          trace: state.trace,
+          sources: state.sources,
+          plan: state.plan,
           usage: state.usage,
           startedAt: state.startedAt,
           completedAt,
@@ -339,10 +495,42 @@ export class AgentLoop {
           toolCalls: response.toolCalls,
         });
 
+        let anyToolSucceededInStep = false;
+
         // Execute each requested tool through ToolExecutor
         for (const toolCall of response.toolCalls) {
           if (signal?.aborted) {
             break;
+          }
+
+          // Advance plan step status for this tool to running
+          if (state.plan) {
+            let step = state.plan.steps.find(
+              (s) => s.tool === toolCall.name && s.status === "pending"
+            );
+            if (!step) {
+              // Replace generic placeholder step (e.g. "Analyze request..."), never the final answer step
+              step = state.plan.steps.find(
+                (s, idx) => s.status === "pending" && !s.tool && idx < (state.plan?.steps.length ?? 0) - 1
+              );
+              if (step) {
+                step.tool = toolCall.name;
+                step.title = formatToolStepTitle(toolCall.name);
+              }
+            }
+            if (!step) {
+              step = {
+                id: `plan-step-${state.plan.steps.length + 1}`,
+                title: formatToolStepTitle(toolCall.name),
+                status: "running",
+                tool: toolCall.name,
+              };
+              const insertIdx = Math.max(0, state.plan.steps.length - 1);
+              state.plan.steps.splice(insertIdx, 0, step);
+            } else {
+              step.status = "running";
+            }
+            callbacks?.onPlan?.(state.plan);
           }
 
           const toolCallStartedAt = new Date();
@@ -354,6 +542,19 @@ export class AgentLoop {
             startedAt: toolCallStartedAt,
           };
 
+          // Record and emit start trace
+          const startTrace: AgentTraceStep = {
+            step: state.currentStep + 1,
+            type: "tool_call",
+            tool: toolCall.name,
+            toolCallId: toolCall.id,
+            input: toolCall.arguments ?? {},
+            status: "running",
+            timestamp: toolCallStartedAt.toISOString(),
+          };
+          state.trace.push(startTrace);
+          callbacks?.onTrace?.(startTrace);
+
           // Safe execution status event: tool running
           callbacks?.onToolStatus?.({
             status: "running",
@@ -361,9 +562,23 @@ export class AgentLoop {
             toolCallId: toolCall.id,
           });
 
+          // Check for repeated tool failure protection
+          const toolCallKey = getToolCallKey(toolCall.name, toolCall.arguments ?? {});
+          const previousFailures = failedToolCallCounts.get(toolCallKey) ?? 0;
+
           let toolResult: ToolCallResult;
 
-          if (toolCall.name === "web_search") {
+          if (previousFailures >= MAX_REPEATED_TOOL_FAILURES) {
+            // Intercept repeated failing tool call without re-executing
+            toolResult = {
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              output: `Repeated tool failure detected: "${toolCall.name}" previously failed with identical arguments. Do NOT retry this tool with the same arguments. Please synthesize an answer from available knowledge or explain what could not be completed.`,
+              isError: true,
+              error: `Tool "${toolCall.name}" previously failed with identical arguments`,
+              durationMs: 0,
+            };
+          } else if (toolCall.name === "web_search") {
             const rawQuery =
               typeof toolCall.arguments?.query === "string"
                 ? toolCall.arguments.query
@@ -431,6 +646,7 @@ export class AgentLoop {
               : Math.max(0, toolCallCompletedAt.getTime() - toolCallStartedAt.getTime());
 
           if (toolResult.isError) {
+            failedToolCallCounts.set(toolCallKey, previousFailures + 1);
             toolCallInfo.status = TOOL_CALL_STATUSES.ERROR;
             toolCallInfo.error = toolResult.error ?? "Tool execution failed";
             toolCallInfo.result = toolResult.output;
@@ -443,7 +659,20 @@ export class AgentLoop {
               error: toolCallInfo.error,
               durationMs: toolCallInfo.durationMs,
             });
+
+            // Update plan step to failed
+            if (state.plan) {
+              const step = state.plan.steps.find(
+                (s) => s.tool === toolCall.name && s.status === "running"
+              );
+              if (step) {
+                step.status = "failed";
+                step.error = toolCallInfo.error;
+                callbacks?.onPlan?.(state.plan);
+              }
+            }
           } else {
+            anyToolSucceededInStep = true;
             toolCallInfo.status = TOOL_CALL_STATUSES.SUCCESS;
             toolCallInfo.result = toolResult.output;
 
@@ -454,6 +683,17 @@ export class AgentLoop {
               toolCallId: toolCall.id,
               durationMs: toolCallInfo.durationMs,
             });
+
+            // Update plan step to completed
+            if (state.plan) {
+              const step = state.plan.steps.find(
+                (s) => s.tool === toolCall.name && s.status === "running"
+              );
+              if (step) {
+                step.status = "completed";
+                callbacks?.onPlan?.(state.plan);
+              }
+            }
 
             if (
               toolCall.name === "web_search" &&
@@ -481,6 +721,7 @@ export class AgentLoop {
                   }
                 }
                 if (webSources.length > 0) {
+                  state.sources = [...(state.sources || []), ...webSources];
                   callbacks?.onSources?.(webSources);
                 }
               }
@@ -498,6 +739,21 @@ export class AgentLoop {
               }
             }
           }
+
+          // Record and emit completion trace
+          const resultTrace: AgentTraceStep = {
+            step: state.currentStep + 1,
+            type: "tool_result",
+            tool: toolCall.name,
+            toolCallId: toolCall.id,
+            output: toolResult.output,
+            ...(toolResult.isError ? { error: toolCallInfo.error } : {}),
+            status: toolResult.isError ? "failed" : "completed",
+            durationMs: toolCallInfo.durationMs,
+            timestamp: toolCallCompletedAt.toISOString(),
+          };
+          state.trace.push(resultTrace);
+          callbacks?.onTrace?.(resultTrace);
 
           state.toolCalls.push(toolCallInfo);
 
@@ -527,11 +783,33 @@ export class AgentLoop {
           });
         }
 
+        // Track consecutive failed steps
+        if (anyToolSucceededInStep) {
+          consecutiveFailedSteps = 0;
+        } else {
+          consecutiveFailedSteps++;
+          if (consecutiveFailedSteps >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+            state.messages.push({
+              role: "system",
+              content:
+                "Notice: Multiple consecutive tool calls have failed. Stop invoking tools and synthesize your best final response to the user based on available information.",
+            });
+          }
+        }
+
         if (signal?.aborted) {
           const completedAt = new Date();
           state.status = AGENT_STATUSES.CANCELLED;
           state.completedAt = completedAt;
           state.updatedAt = completedAt;
+          if (state.plan) {
+            state.plan.steps.forEach((s) => {
+              if (s.status === "pending" || s.status === "running") {
+                s.status = "skipped";
+              }
+            });
+            callbacks?.onPlan?.(state.plan);
+          }
           return {
             executionId: state.id,
             userId: state.userId,
@@ -540,6 +818,9 @@ export class AgentLoop {
             output: state.output ?? null,
             stepsCompleted: state.currentStep,
             toolCalls: state.toolCalls,
+            trace: state.trace,
+            sources: state.sources,
+            plan: state.plan,
             usage: state.usage,
             startedAt: state.startedAt,
             completedAt,
@@ -563,6 +844,18 @@ export class AgentLoop {
           state.completedAt = completedAt;
           state.updatedAt = completedAt;
 
+          if (state.plan) {
+            state.plan.steps.forEach((s) => {
+              if (s.status === "running") {
+                s.status = "failed";
+                s.error = maxStepsError;
+              } else if (s.status === "pending") {
+                s.status = "skipped";
+              }
+            });
+            callbacks?.onPlan?.(state.plan);
+          }
+
           return {
             executionId: state.id,
             userId: state.userId,
@@ -571,6 +864,9 @@ export class AgentLoop {
             output: null,
             stepsCompleted: state.currentStep,
             toolCalls: state.toolCalls,
+            trace: state.trace,
+            sources: state.sources,
+            plan: state.plan,
             usage: state.usage,
             startedAt: state.startedAt,
             completedAt,
@@ -587,6 +883,15 @@ export class AgentLoop {
 
       // Step 5: Model returned normal content (no tool calls) -> Final response generation
       callbacks?.onStatus?.("generating", "Generating response...");
+
+      // Update final plan step to running
+      if (state.plan) {
+        const finalStep = state.plan.steps[state.plan.steps.length - 1];
+        if (finalStep) {
+          finalStep.status = "running";
+          callbacks?.onPlan?.(state.plan);
+        }
+      }
 
       // Clean think tags if any exist in the response content
       let finalContent = response.content || "";
@@ -609,12 +914,33 @@ export class AgentLoop {
       state.completedAt = completedAt;
       state.updatedAt = completedAt;
 
+      // Update final plan step to completed
+      if (state.plan) {
+        const finalStep = state.plan.steps[state.plan.steps.length - 1];
+        if (finalStep) {
+          finalStep.status = "completed";
+          callbacks?.onPlan?.(state.plan);
+        }
+      }
+
       state.messages.push({
         role: "assistant",
         content: state.output || "",
       });
 
       const durationMs = Math.max(0, completedAt.getTime() - state.startedAt.getTime());
+
+      // Record final response trace step
+      const finalTrace: AgentTraceStep = {
+        step: state.currentStep,
+        type: "final_response",
+        output: state.output,
+        status: "completed",
+        durationMs,
+        timestamp: completedAt.toISOString(),
+      };
+      state.trace.push(finalTrace);
+      callbacks?.onTrace?.(finalTrace);
 
       const finalResult: AgentExecutionResult = {
         executionId: state.id,
@@ -624,6 +950,9 @@ export class AgentLoop {
         output: state.output,
         stepsCompleted: state.currentStep,
         toolCalls: state.toolCalls,
+        trace: state.trace,
+        sources: state.sources,
+        plan: state.plan,
         usage: state.usage,
         startedAt: state.startedAt,
         completedAt,
@@ -641,6 +970,18 @@ export class AgentLoop {
     const durationMs = Math.max(0, completedAt.getTime() - state.startedAt.getTime());
     const fallbackError = `Maximum execution steps (${state.maxSteps}) reached`;
 
+    if (state.plan) {
+      state.plan.steps.forEach((s) => {
+        if (s.status === "running") {
+          s.status = "failed";
+          s.error = fallbackError;
+        } else if (s.status === "pending") {
+          s.status = "skipped";
+        }
+      });
+      callbacks?.onPlan?.(state.plan);
+    }
+
     return {
       executionId: state.id,
       userId: state.userId,
@@ -649,6 +990,9 @@ export class AgentLoop {
       output: null,
       stepsCompleted: state.currentStep,
       toolCalls: state.toolCalls,
+      trace: state.trace,
+      sources: state.sources,
+      plan: state.plan,
       usage: state.usage,
       startedAt: state.startedAt,
       completedAt,

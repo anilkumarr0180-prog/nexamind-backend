@@ -15,6 +15,7 @@ import {
   TOOL_CALL_STATUSES,
   ToolRegistry,
   calculatorTool,
+  WebSearchTool,
 } from "../src/modules/agent/index.js";
 import type {
   AIProvider,
@@ -231,6 +232,7 @@ const runTests = async () => {
     assert.ok(types.includes("status"), "Must include status event");
     assert.ok(types.includes("tool_status"), "Must include tool_status event");
     assert.ok(types.includes("chunk"), "Must include chunk events");
+    assert.ok(types.includes("trace"), "Must include trace events");
     assert.ok(types.includes("done"), "Must include done event");
 
     // Verify safe tool status: tool running, tool completed
@@ -570,12 +572,168 @@ const runTests = async () => {
     console.log("✓ Conversation isolation verified: no cross-conversation leakage or state interference");
   }
 
+
+
+  // --------------------------------------------------------------------------
+  // Test 6: Multi-Step Streaming with Web Search, Calculator, Trace, and Sources
+  // --------------------------------------------------------------------------
+  console.log("\n[Test 6] Testing Multi-Step Streaming with Web Search, Calculator, Trace, and Sources...");
+  {
+    const registry = new ToolRegistry();
+    const mockFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        results: [
+          {
+            title: "Live FX: USD to INR",
+            url: "https://example.com/fx/usd-inr",
+            content: "1 USD is currently 86.5 INR.",
+          },
+        ],
+      }),
+    });
+    const mockWebSearchTool = new WebSearchTool({
+      apiKey: "mock-key",
+      fetchFn: mockFetch as any,
+      disableCache: true,
+    });
+    registry.register(mockWebSearchTool);
+    registry.register(calculatorTool);
+
+    const mockProvider = new MockAgentStreamingProvider(async (messages, options, callIndex) => {
+      if (callIndex === 0) {
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 25, outputTokens: 10, totalTokens: 35 },
+          toolCalls: [
+            {
+              id: "call_stream_ws",
+              name: "web_search",
+              arguments: { query: "USD to INR exchange rate" },
+            },
+          ],
+        };
+      }
+      if (callIndex === 1) {
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 35, outputTokens: 10, totalTokens: 45 },
+          toolCalls: [
+            {
+              id: "call_stream_calc",
+              name: "calculator",
+              arguments: { expression: "500 * 86.5" },
+            },
+          ],
+        };
+      }
+      return {
+        content: "Based on the latest USD/INR rate of 86.5 [1], $500 equals 43,250 INR.",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 45, outputTokens: 20, totalTokens: 65 },
+      };
+    });
+
+    const testService = new AgentService({
+      provider: mockProvider,
+      registry,
+    });
+    setAgentService(testService);
+
+    const conv = await Conversation.create({
+      userId,
+      title: "Multi-Step Agent Streaming",
+      status: CONVERSATION_STATUSES.ACTIVE,
+      messageCount: 0,
+    });
+
+    const postData = JSON.stringify({
+      task: "Search the latest USD/INR rate and calculate the value of $500.",
+      conversationId: conv._id.toString(),
+      stream: true,
+    });
+
+    const events = await new Promise<any[]>((resolve, reject) => {
+      const req = http.request(
+        `${baseUrl}/api/v1/agent/run`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+            Authorization: `Bearer ${token}`,
+            "Content-Length": Buffer.byteLength(postData),
+          },
+        },
+        async (res) => {
+          try {
+            const evts = await readSseEvents(res);
+            resolve(evts);
+          } catch (err) {
+            reject(err);
+          }
+        },
+      );
+      req.on("error", reject);
+      req.write(postData);
+      req.end();
+    });
+
+    const types = events.map((e) => e.type);
+    assert.ok(types.includes("start"), "Must include start event");
+    assert.ok(types.includes("plan"), "Must include plan event");
+    assert.ok(types.includes("tool_status"), "Must include tool_status event");
+    assert.ok(types.includes("sources"), "Must stream sources event");
+    assert.ok(types.includes("trace"), "Must stream trace events");
+    assert.ok(types.includes("chunk"), "Must stream chunk event");
+    assert.ok(types.includes("done"), "Must stream done event");
+
+    // Verify plan events emitted over SSE
+    const planEvents = events.filter((e) => e.type === "plan");
+    assert.ok(planEvents.length >= 1, "Must emit plan SSE events");
+    assert.ok(Array.isArray(planEvents[0].plan?.steps), "Plan event must contain steps");
+
+    // Verify sources event payload
+    const sourcesEvent = events.find((e) => e.type === "sources");
+    assert.ok(sourcesEvent && Array.isArray(sourcesEvent.sources));
+    assert.equal(sourcesEvent.sources[0].url, "https://example.com/fx/usd-inr");
+
+    // Verify trace events
+    const traceEvents = events.filter((e) => e.type === "trace");
+    assert.ok(traceEvents.length >= 4, "Must emit trace events for all execution steps");
+
+    // Verify done event contains trace and sources
+    const doneEvent = events.find((e) => e.type === "done");
+    assert.ok(doneEvent?.data?.trace, "Done event data must include trace");
+    assert.ok(doneEvent?.data?.sources, "Done event data must include sources");
+    assert.ok(doneEvent?.data?.plan, "Done event data must include plan");
+    assert.equal(doneEvent.data.stepsCompleted, 3);
+    assert.equal(doneEvent.data.toolCalls.length, 2);
+
+    // Verify database persistence of sources
+    const messages = await Message.find({ conversationId: conv._id }).sort({ createdAt: 1 });
+    assert.equal(messages.length, 2);
+    const assistantMsg = messages[1];
+    assert.equal(assistantMsg.role, MESSAGE_ROLES.ASSISTANT);
+    assert.ok(Array.isArray(assistantMsg.sources) && assistantMsg.sources.length > 0, "Assistant message must persist web sources");
+    assert.equal(assistantMsg.sources[0].url, "https://example.com/fx/usd-inr");
+
+    console.log("✓ Multi-step streaming delivered tool_status, sources, trace, chunks, and persisted sources to DB");
+  }
+
+
   // Cleanup
   setAgentService(agentService);
   server.close();
   await disconnectDatabase();
   console.log("\n==================================================");
-  console.log(" ALL AGENT STREAMING TESTS PASSED (5/5)          ");
+  console.log(" ALL AGENT STREAMING TESTS PASSED (6/6)          ");
   console.log("==================================================\n");
 };
 

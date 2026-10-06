@@ -173,12 +173,15 @@ export class WebSearchTool
     }
     const q = query.trim().toLowerCase();
 
-    // Exclude pure math expressions or calculations
-    if (/\b(calculate|calculator|compute|eval|arithmetic)\b/i.test(q)) {
-      return false;
-    }
-    if (/^\s*\d+(?:\.\d+)?\s*[\+\-\*\/%]\s*\d+/.test(q)) {
-      return false;
+    // Exclude pure math expressions or calculations unless explicit search/lookup action is present
+    const hasSearchAction = /\b(search|look up|lookup|google)\b/i.test(q);
+    if (!hasSearchAction) {
+      if (/\b(calculate|calculator|compute|eval|arithmetic)\b/i.test(q)) {
+        return false;
+      }
+      if (/^\s*\d+(?:\.\d+)?\s*[\+\-\*\/%]\s*\d+/.test(q)) {
+        return false;
+      }
     }
 
     // Exclude pure datetime queries
@@ -197,7 +200,7 @@ export class WebSearchTool
 
     // 1. Direct explicit search intent actions
     if (
-      /\b(search for|search the web|search online|web search|internet search|browse the web)\b/i.test(
+      /\b(search for|search the web|search online|web search|internet search|browse the web|search (?:the )?(?:latest|current|recent))\b/i.test(
         q,
       ) ||
       /\b(look up|google)\b/i.test(q) ||
