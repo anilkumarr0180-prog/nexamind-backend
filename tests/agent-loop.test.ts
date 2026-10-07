@@ -5,6 +5,10 @@ import {
   ToolRegistry,
   ToolExecutor,
   calculatorTool,
+  WebSearchTool,
+  type AgentTraceStep,
+  type AgentPlan,
+  type PlanStep,
   AGENT_STATUSES,
   TOOL_CALL_STATUSES,
   type AgentExecutionInput,
@@ -476,8 +480,548 @@ const runTests = async () => {
     console.log("✓ Invalid input handled cleanly without crashing");
   }
 
+
+  // -------------------------------------------------------------
+  // Test 11: Web Search -> Calculator multi-step execution flow
+  // (Goal: "Search the latest USD/INR rate and calculate the value of $500.")
+  // -------------------------------------------------------------
+  console.log("\n[Test 11] Testing Web Search -> Calculator sequential multi-step execution flow...");
+  {
+    const registry = new ToolRegistry();
+    const mockFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        results: [
+          {
+            title: "Live Currency Exchange Rates: USD to INR",
+            url: "https://example.com/currency/usd-inr",
+            content: "As of today, 1 USD is equal to 86.5 INR in global markets.",
+          },
+        ],
+      }),
+    });
+    const mockWebSearchTool = new WebSearchTool({
+      apiKey: "mock-key",
+      fetchFn: mockFetch as any,
+      disableCache: true,
+    });
+    registry.register(mockWebSearchTool);
+    registry.register(calculatorTool);
+
+    const provider = new MockAIProvider(async (messages, options, callIndex) => {
+      if (callIndex === 0) {
+        // Step 1: Agent decides to search for the exchange rate
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 30, outputTokens: 10, totalTokens: 40 },
+          toolCalls: [
+            {
+              id: "call_ws_rate",
+              name: "web_search",
+              arguments: { query: "latest USD to INR exchange rate" },
+            },
+          ],
+        };
+      }
+      if (callIndex === 1) {
+        // Step 2: Agent inspects retrieved rate (86.5) and decides to calculate 500 * 86.5
+        const lastMsg = messages[messages.length - 1];
+        assert.equal(lastMsg.role, "tool");
+        assert.equal(lastMsg.name, "web_search");
+        assert.ok(lastMsg.content.includes("86.5"));
+
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 45, outputTokens: 12, totalTokens: 57 },
+          toolCalls: [
+            {
+              id: "call_calc_500",
+              name: "calculator",
+              arguments: { expression: "500 * 86.5" },
+            },
+          ],
+        };
+      }
+      // Step 3: Agent produces final response combining web search facts and exact calculation
+      const lastMsg = messages[messages.length - 1];
+      assert.equal(lastMsg.role, "tool");
+      assert.equal(lastMsg.name, "calculator");
+      assert.ok(lastMsg.content.includes("43250"));
+
+      return {
+        content: "Based on the latest USD/INR rate of 86.5 [1], the value of $500 is 43,250 INR.",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 55, outputTokens: 25, totalTokens: 80 },
+      };
+    });
+
+    const emittedToolStatuses: any[] = [];
+    const emittedTraceSteps: AgentTraceStep[] = [];
+    const emittedSources: any[] = [];
+
+    const result = await runAgentLoop(
+      {
+        userId: "user_test_multi",
+        task: "Search the latest USD/INR rate and calculate the value of $500.",
+      },
+      {
+        provider,
+        registry,
+      },
+      {
+        callbacks: {
+          onToolStatus: (s) => emittedToolStatuses.push(s),
+          onTrace: (t) => emittedTraceSteps.push(t),
+          onSources: (srcs) => emittedSources.push(...srcs),
+        },
+      },
+    );
+
+    assert.equal(result.status, AGENT_STATUSES.COMPLETED);
+    assert.equal(result.stepsCompleted, 3);
+    assert.equal(result.toolCalls.length, 2);
+    assert.equal(result.toolCalls[0].name, "web_search");
+    assert.equal(result.toolCalls[0].status, TOOL_CALL_STATUSES.SUCCESS);
+    assert.equal(result.toolCalls[1].name, "calculator");
+    assert.equal(result.toolCalls[1].status, TOOL_CALL_STATUSES.SUCCESS);
+    assert.ok(result.output?.includes("43,250"));
+    assert.ok(result.output?.includes("86.5"));
+
+    // Verify structured trace tracking
+    assert.ok(result.trace, "Result must contain structured trace");
+    assert.ok(result.trace.length >= 5, "Trace must contain all execution steps");
+    assert.equal(result.trace[0].type, "tool_call");
+    assert.equal(result.trace[0].tool, "web_search");
+    assert.equal(result.trace[1].type, "tool_result");
+    assert.equal(result.trace[1].tool, "web_search");
+    assert.equal(result.trace[2].type, "tool_call");
+    assert.equal(result.trace[2].tool, "calculator");
+    assert.equal(result.trace[3].type, "tool_result");
+    assert.equal(result.trace[3].tool, "calculator");
+    const lastTrace = result.trace[result.trace.length - 1];
+    assert.equal(lastTrace.type, "final_response");
+
+    // Verify sources collected
+    assert.ok(result.sources && result.sources.length > 0, "Sources must be attached to result");
+    assert.equal(result.sources[0].url, "https://example.com/currency/usd-inr");
+    assert.ok(emittedSources.length > 0, "onSources callback must be emitted");
+
+    console.log("✓ Web Search -> Calculator multi-step execution flow completed cleanly with trace and sources");
+  }
+
+  // -------------------------------------------------------------
+  // Test 12: Repeated tool failure protection
+  // -------------------------------------------------------------
+  console.log("\n[Test 12] Testing repeated failure protection against infinite retry loops...");
+  {
+    const registry = new ToolRegistry();
+    registry.register(calculatorTool);
+
+    let calculatorExecutionCount = 0;
+    const provider = new MockAIProvider(async (messages, options, callIndex) => {
+      if (callIndex === 0) {
+        // Step 1: Model requests invalid calculation
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
+          toolCalls: [
+            {
+              id: "call_fail_1",
+              name: "calculator",
+              arguments: { expression: "100 / 0" },
+            },
+          ],
+        };
+      }
+      if (callIndex === 1) {
+        // Step 2: Model attempts 1st retry (allowed in case of flakey/transient error)
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 25, outputTokens: 5, totalTokens: 30 },
+          toolCalls: [
+            {
+              id: "call_fail_2",
+              name: "calculator",
+              arguments: { expression: "100 / 0" },
+            },
+          ],
+        };
+      }
+      if (callIndex === 2) {
+        // Step 3: Model attempts repeated failing call -> intercepted!
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 30, outputTokens: 5, totalTokens: 35 },
+          toolCalls: [
+            {
+              id: "call_fail_3",
+              name: "calculator",
+              arguments: { expression: "100 / 0" },
+            },
+          ],
+        };
+      }
+      // Step 4: Model receives repeated failure protection notice and provides final answer
+      return {
+        content: "Division by zero is undefined, so the expression cannot be calculated.",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 35, outputTokens: 10, totalTokens: 45 },
+      };
+    });
+
+    const result = await runAgentLoop(
+      { userId: "user_test_repeat", task: "Divide 100 by zero repeatedly" },
+      { provider, registry },
+    );
+
+    assert.equal(result.status, AGENT_STATUSES.COMPLETED);
+    assert.equal(result.stepsCompleted, 4);
+    assert.equal(result.toolCalls.length, 3);
+    assert.equal(result.toolCalls[0].status, TOOL_CALL_STATUSES.ERROR);
+    assert.equal(result.toolCalls[1].status, TOOL_CALL_STATUSES.ERROR);
+    assert.equal(result.toolCalls[2].status, TOOL_CALL_STATUSES.ERROR);
+    assert.ok(
+      result.toolCalls[2].error?.includes("previously failed with identical arguments"),
+      "Third call must be intercepted by repeated failure protection",
+    );
+    assert.ok(result.output?.includes("undefined"));
+    console.log("✓ Repeated tool failure intercepted and prevented infinite retry loop");
+  }
+
+  // -------------------------------------------------------------
+  // Test 13: Execution trace detail & lifecycle timestamps
+  // -------------------------------------------------------------
+  console.log("\n[Test 13] Testing structured execution trace detail & lifecycle timestamps...");
+  {
+    const registry = new ToolRegistry();
+    registry.register(calculatorTool);
+
+    const provider = new MockAIProvider(async (messages, options, callIndex) => {
+      if (callIndex === 0) {
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+          toolCalls: [
+            {
+              id: "call_trace_calc",
+              name: "calculator",
+              arguments: { expression: "15 + 25" },
+            },
+          ],
+        };
+      }
+      return {
+        content: "15 + 25 = 40",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 15, outputTokens: 5, totalTokens: 20 },
+      };
+    });
+
+    const streamedTrace: AgentTraceStep[] = [];
+    const result = await runAgentLoop(
+      { userId: "user_test_trace", task: "Add 15 and 25" },
+      { provider, registry },
+      {
+        callbacks: {
+          onTrace: (step) => streamedTrace.push(step),
+        },
+      },
+    );
+
+    assert.equal(result.status, AGENT_STATUSES.COMPLETED);
+    assert.ok(result.trace);
+    assert.equal(result.trace.length, 3); // tool_call, tool_result, final_response
+    assert.equal(streamedTrace.length, 3);
+
+    for (const step of result.trace) {
+      assert.ok(typeof step.step === "number" && step.step >= 1);
+      assert.ok(typeof step.timestamp === "string" && !isNaN(Date.parse(step.timestamp)));
+      assert.ok(step.status === "running" || step.status === "completed" || step.status === "failed");
+    }
+
+    console.log("✓ Execution trace structured steps, timestamps, and streaming callbacks verified");
+  }
+
+  // -------------------------------------------------------------
+  // Test 14: Mid-execution cancellation via AbortSignal
+  // -------------------------------------------------------------
+  console.log("\n[Test 14] Testing cancellation mid-execution via AbortSignal...");
+  {
+    const registry = new ToolRegistry();
+    registry.register(calculatorTool);
+
+    const abortController = new AbortController();
+
+    const provider = new MockAIProvider(async (messages, options, callIndex) => {
+      // Abort after first model step
+      abortController.abort();
+      return {
+        content: "",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        toolCalls: [
+          {
+            id: "call_cancel_1",
+            name: "calculator",
+            arguments: { expression: "5 + 5" },
+          },
+        ],
+      };
+    });
+
+    const result = await runAgentLoop(
+      { userId: "user_test_cancel", task: "Cancel this task" },
+      { provider, registry },
+      { signal: abortController.signal },
+    );
+
+    assert.equal(result.status, AGENT_STATUSES.CANCELLED);
+    console.log("✓ Mid-execution AbortSignal cleanly cancelled agent loop");
+  }
+
+
+  // -------------------------------------------------------------
+  // Test 15: Plan generation and step status updates for single tool request
+  // -------------------------------------------------------------
+  console.log("\n[Test 15] Testing Plan generation and step status updates for single tool request...");
+  {
+    const registry = new ToolRegistry();
+    registry.register(calculatorTool);
+
+    const provider = new MockAIProvider(async (messages, options, callIndex) => {
+      if (callIndex === 0) {
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+          toolCalls: [
+            {
+              id: "call_calc_plan",
+              name: "calculator",
+              arguments: { expression: "25 + 75" },
+            },
+          ],
+        };
+      }
+      return {
+        content: "25 + 75 = 100",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 15, outputTokens: 5, totalTokens: 20 },
+      };
+    });
+
+    const emittedPlans: AgentPlan[] = [];
+    const result = await runAgentLoop(
+      { userId: "user_plan_single", task: "Calculate 25 + 75" },
+      { provider, registry },
+      {
+        callbacks: {
+          onPlan: (plan) => emittedPlans.push(JSON.parse(JSON.stringify(plan))),
+        },
+      },
+    );
+
+    assert.equal(result.status, AGENT_STATUSES.COMPLETED);
+    assert.ok(result.plan, "Result must include plan");
+    assert.equal(result.plan.steps.length, 2);
+    assert.equal(result.plan.steps[0].title, "Calculate the result");
+    assert.equal(result.plan.steps[0].status, "completed");
+    assert.equal(result.plan.steps[1].title, "Generate the answer");
+    assert.equal(result.plan.steps[1].status, "completed");
+
+    // Verify lifecycle emission of plans
+    assert.ok(emittedPlans.length >= 3, "Must emit plan at each lifecycle transition");
+    // Initial plan: pending
+    assert.equal(emittedPlans[0].steps[0].status, "pending");
+    assert.equal(emittedPlans[0].steps[1].status, "pending");
+    // As tool runs: running
+    const runningPlan = emittedPlans.find((p) => p.steps[0].status === "running");
+    assert.ok(runningPlan, "Must emit plan with running status");
+    // Final plan: all completed
+    const finalPlan = emittedPlans[emittedPlans.length - 1];
+    assert.equal(finalPlan.steps[0].status, "completed");
+    assert.equal(finalPlan.steps[1].status, "completed");
+
+    console.log("✓ Plan generation and step status updates (pending -> running -> completed) verified for single tool");
+  }
+
+  // -------------------------------------------------------------
+  // Test 16: Plan preview and sequential step transitions for Web Search -> Calculator
+  // -------------------------------------------------------------
+  console.log("\n[Test 16] Testing Plan preview for Web Search -> Calculator multi-step request...");
+  {
+    const registry = new ToolRegistry();
+    const mockFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        results: [{ title: "Rate", url: "https://example.com/fx", content: "1 USD = 86.5 INR" }],
+      }),
+    });
+    const mockWebSearchTool = new WebSearchTool({
+      apiKey: "mock-key",
+      fetchFn: mockFetch as any,
+      disableCache: true,
+    });
+    registry.register(mockWebSearchTool);
+    registry.register(calculatorTool);
+
+    const provider = new MockAIProvider(async (messages, options, callIndex) => {
+      if (callIndex === 0) {
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
+          toolCalls: [{ id: "call_ws", name: "web_search", arguments: { query: "USD/INR rate" } }],
+        };
+      }
+      if (callIndex === 1) {
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 30, outputTokens: 5, totalTokens: 35 },
+          toolCalls: [{ id: "call_calc", name: "calculator", arguments: { expression: "500 * 86.5" } }],
+        };
+      }
+      return {
+        content: "500 USD is 43,250 INR.",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 40, outputTokens: 10, totalTokens: 50 },
+      };
+    });
+
+    const emittedPlans: AgentPlan[] = [];
+    const result = await runAgentLoop(
+      { userId: "user_plan_multi", task: "Search the latest USD/INR rate and calculate the value of $500." },
+      { provider, registry },
+      {
+        callbacks: {
+          onPlan: (plan) => emittedPlans.push(JSON.parse(JSON.stringify(plan))),
+        },
+      },
+    );
+
+    assert.equal(result.status, AGENT_STATUSES.COMPLETED);
+    assert.ok(result.plan);
+    assert.equal(result.plan.steps.length, 3);
+    assert.equal(result.plan.steps[0].title, "Search current information");
+    assert.equal(result.plan.steps[0].status, "completed");
+    assert.equal(result.plan.steps[1].title, "Calculate the result");
+    assert.equal(result.plan.steps[1].status, "completed");
+    assert.equal(result.plan.steps[2].title, "Generate the answer");
+    assert.equal(result.plan.steps[2].status, "completed");
+
+    // Check step 1 initially running while step 2 is pending
+    const step1Running = emittedPlans.find(
+      (p) => p.steps[0].status === "running" && p.steps[1].status === "pending",
+    );
+    assert.ok(step1Running, "Step 1 must be running while step 2 is pending");
+
+    // Check step 1 completed while step 2 running
+    const step2Running = emittedPlans.find(
+      (p) => p.steps[0].status === "completed" && p.steps[1].status === "running",
+    );
+    assert.ok(step2Running, "Step 1 must be completed while step 2 is running");
+
+    console.log("✓ Plan preview for Web Search -> Calculator updated correctly across multi-step lifecycle");
+  }
+
+  // -------------------------------------------------------------
+  // Test 17: Plan step status on tool failure
+  // -------------------------------------------------------------
+  console.log("\n[Test 17] Testing Plan step status on tool failure...");
+  {
+    const registry = new ToolRegistry();
+    registry.register(calculatorTool);
+
+    const provider = new MockAIProvider(async (messages, options, callIndex) => {
+      if (callIndex === 0) {
+        return {
+          content: "",
+          provider: "mock",
+          model: "mock-model",
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+          toolCalls: [{ id: "call_fail", name: "calculator", arguments: { expression: "10 / 0" } }],
+        };
+      }
+      return {
+        content: "Division by zero is undefined.",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
+      };
+    });
+
+    const result = await runAgentLoop(
+      { userId: "user_plan_fail", task: "Calculate 10 / 0" },
+      { provider, registry },
+    );
+
+    assert.equal(result.status, AGENT_STATUSES.COMPLETED);
+    assert.ok(result.plan);
+    assert.equal(result.plan.steps[0].status, "failed");
+    assert.ok(result.plan.steps[0].error?.includes("Division by zero"));
+    assert.equal(result.plan.steps[1].status, "completed");
+    console.log("✓ Plan step status accurately marked as failed with error details on tool failure");
+  }
+
+  // -------------------------------------------------------------
+  // Test 18: Plan step status on cancellation
+  // -------------------------------------------------------------
+  console.log("\n[Test 18] Testing Plan step status on cancellation...");
+  {
+    const registry = new ToolRegistry();
+    registry.register(calculatorTool);
+
+    const abortController = new AbortController();
+    const provider = new MockAIProvider(async () => {
+      abortController.abort();
+      return {
+        content: "",
+        provider: "mock",
+        model: "mock-model",
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        toolCalls: [{ id: "call_c", name: "calculator", arguments: { expression: "2 + 2" } }],
+      };
+    });
+
+    const result = await runAgentLoop(
+      { userId: "user_plan_cancel", task: "Calculate 2 + 2 and cancel" },
+      { provider, registry },
+      { signal: abortController.signal },
+    );
+
+    assert.equal(result.status, AGENT_STATUSES.CANCELLED);
+    assert.ok(result.plan);
+    // Unfinished steps marked skipped
+    assert.ok(result.plan.steps.every((s) => s.status === "skipped" || s.status === "completed"));
+    console.log("✓ Plan step status on cancellation correctly marked remaining steps as skipped");
+  }
+
   console.log("\n==================================================");
-  console.log(" ALL AGENT LOOP UNIT TESTS PASSED (10/10)        ");
+  console.log(" ALL AGENT LOOP UNIT TESTS PASSED (18/18)        ");
   console.log("==================================================\n");
 };
 

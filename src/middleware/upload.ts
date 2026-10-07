@@ -230,3 +230,128 @@ export const uploadSingleDocument = (
     return next();
   });
 };
+
+
+export const ALLOWED_AUDIO_EXTENSIONS = [
+  ".webm",
+  ".mp4",
+  ".m4a",
+  ".ogg",
+  ".wav",
+  ".mp3",
+  ".aac",
+  ".flac",
+  ".opus",
+  ".oga",
+] as const;
+
+export const MAX_AUDIO_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+
+const multerAudioUpload = multer({
+  storage,
+  limits: {
+    fileSize: MAX_AUDIO_FILE_SIZE,
+    files: 1,
+  },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const mime = file.mimetype.toLowerCase();
+    const hasValidExt = (ALLOWED_AUDIO_EXTENSIONS as readonly string[]).includes(ext);
+    const hasValidMime =
+      mime.startsWith("audio/") ||
+      mime === "video/webm" ||
+      mime === "video/mp4" ||
+      mime === "application/octet-stream";
+
+    if (!hasValidExt && !hasValidMime) {
+      return cb(
+        new AppError(
+          "Invalid audio format. Supported formats: WEBM, MP4, M4A, OGG, WAV, MP3, AAC, FLAC",
+          400,
+          "INVALID_MIME_TYPE",
+        ),
+      );
+    }
+
+    cb(null, true);
+  },
+});
+
+/**
+ * Middleware for parsing multipart/form-data with exactly one audio file.
+ * Normalizes files from field names "file" or "audio" and validates constraints strictly.
+ */
+export const uploadSingleAudio = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void => {
+  multerAudioUpload.any()(req, res, (err) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return next(
+            new AppError(
+              `File size exceeds maximum allowed limit of ${MAX_AUDIO_FILE_SIZE / (1024 * 1024)}MB`,
+              400,
+              "FILE_TOO_LARGE",
+            ),
+          );
+        }
+
+        if (
+          err.code === "LIMIT_FILE_COUNT" ||
+          err.code === "LIMIT_UNEXPECTED_FILE"
+        ) {
+          return next(
+            new AppError(
+              "Only exactly one audio file is allowed",
+              400,
+              "TOO_MANY_FILES",
+            ),
+          );
+        }
+
+        return next(new AppError(err.message, 400, "INVALID_UPLOAD"));
+      }
+
+      if (err instanceof AppError) {
+        return next(err);
+      }
+
+      return next(err);
+    }
+
+    const files = req.files as Express.Multer.File[] | undefined;
+
+    if (!files || files.length === 0) {
+      return next(
+        new AppError("Audio file is required", 400, "MISSING_FILE"),
+      );
+    }
+
+    if (files.length > 1) {
+      return next(
+        new AppError(
+          "Only exactly one audio file is allowed",
+          400,
+          "TOO_MANY_FILES",
+        ),
+      );
+    }
+
+    const singleFile = files[0]!;
+    if (singleFile.fieldname !== "file" && singleFile.fieldname !== "audio") {
+      return next(
+        new AppError(
+          "Audio file must be provided in field 'file' or 'audio'",
+          400,
+          "INVALID_FILE_FIELD",
+        ),
+      );
+    }
+
+    req.file = singleFile;
+    return next();
+  });
+};

@@ -70,6 +70,52 @@ export interface ToolCallInfo {
 /**
  * Input parameters required to initiate an agent execution.
  */
+
+/**
+ * Structured step in the agent execution trace.
+ */
+
+/**
+ * Status of an individual step in the agent plan.
+ */
+export type PlanStepStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "skipped";
+
+/**
+ * Representation of a planned step in the agent execution preview.
+ */
+export interface PlanStep {
+  id: string;
+  title: string;
+  status: PlanStepStatus;
+  tool?: string | undefined;
+  error?: string | undefined;
+}
+
+/**
+ * High-level execution plan or intent sequence for the agent task.
+ */
+export interface AgentPlan {
+  steps: PlanStep[];
+}
+
+export interface AgentTraceStep {
+  step: number;
+  type: "tool_call" | "tool_result" | "thought" | "final_response" | "error";
+  tool?: string | undefined;
+  toolCallId?: string | undefined;
+  input?: Record<string, unknown> | undefined;
+  output?: unknown | undefined;
+  error?: string | undefined;
+  status?: "running" | "completed" | "failed" | undefined;
+  durationMs?: number | undefined;
+  timestamp: string;
+}
+
 export interface AgentExecutionInput {
   userId: string;
   task: string;
@@ -93,6 +139,9 @@ export interface AgentExecutionState {
   maxSteps: number;
   messages: AIMessage[];
   toolCalls: ToolCallInfo[];
+  trace: AgentTraceStep[];
+  sources?: Array<{ type: "web" | "document"; title: string; url: string }> | undefined;
+  plan?: AgentPlan | undefined;
   usage: AIUsage;
   conversationId?: string | undefined;
   output?: string | undefined;
@@ -114,6 +163,9 @@ export interface AgentExecutionResult {
   output: string | null;
   stepsCompleted: number;
   toolCalls: ToolCallInfo[];
+  trace?: AgentTraceStep[] | undefined;
+  sources?: Array<{ type: "web" | "document"; title: string; url: string }> | undefined;
+  plan?: AgentPlan | undefined;
   usage: AIUsage;
   startedAt: Date;
   completedAt: Date;
@@ -144,6 +196,8 @@ export interface AgentStreamCallbacks {
   }) => void;
   onStatus?: (status: string, message: string) => void;
   onToolStatus?: (event: ToolStatusEvent) => void;
+  onPlan?: (plan: AgentPlan) => void;
+  onTrace?: (trace: AgentTraceStep) => void;
   onChunk?: (chunk: string) => void;
   onSources?: (sources: any[]) => void;
   onDone?: (result: AgentExecutionResult) => void;
