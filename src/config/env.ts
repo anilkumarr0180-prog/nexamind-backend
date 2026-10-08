@@ -226,7 +226,14 @@ export const envSchema = z
     GOOGLE_CLIENT_ID: z
       .string()
       .trim()
-      .transform((val) => (val.length > 0 ? val : undefined))
+      .refine(
+        (val) => !val || val.length === 0 || val.endsWith(".apps.googleusercontent.com"),
+        {
+          message:
+            "GOOGLE_CLIENT_ID must be a valid Google OAuth Client ID ending with .apps.googleusercontent.com",
+        },
+      )
+      .transform((val) => (val && val.length > 0 ? val : undefined))
       .optional(),
 
     GOOGLE_CLIENT_SECRET: z

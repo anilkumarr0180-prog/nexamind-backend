@@ -60,3 +60,21 @@ export const getMe = async (
     data: user,
   });
 };
+
+export const linkGoogle = async (
+  req: Request<Record<string, never>, unknown, GoogleAuthInput>,
+  res: Response,
+): Promise<void> => {
+  const authUser = req.user;
+
+  if (!authUser) {
+    throw new AppError("Authentication required", 401, "UNAUTHORIZED");
+  }
+
+  const result = await authService.linkGoogleAccount(authUser.userId, req.body);
+
+  res.status(200).json({
+    success: true,
+    data: result,
+  });
+};

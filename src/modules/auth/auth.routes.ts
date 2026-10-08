@@ -29,6 +29,20 @@ router.post(
   validate(googleAuthSchema),
   authController.googleAuth,
 );
+router.post(
+  "/google/link",
+  authRateLimiter,
+  authenticate,
+  validate(googleAuthSchema),
+  authController.linkGoogle,
+);
+router.post(
+  "/link-google",
+  authRateLimiter,
+  authenticate,
+  validate(googleAuthSchema),
+  authController.linkGoogle,
+);
 router.get("/me", authenticate, authController.getMe);
 
 export default router;

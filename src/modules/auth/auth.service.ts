@@ -17,6 +17,8 @@ export type SafeUser = {
   email: string;
   status: string;
   roles: string[];
+  isGoogleLinked?: boolean;
+  googleLinked?: boolean;
   lastLoginAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -33,6 +35,7 @@ export const toSafeUser = (user: {
   email: string;
   status: string;
   roles: string[];
+  googleId?: string | null;
   lastLoginAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
@@ -42,6 +45,8 @@ export const toSafeUser = (user: {
   email: user.email,
   status: user.status,
   roles: [...user.roles],
+  isGoogleLinked: Boolean(user.googleId),
+  googleLinked: Boolean(user.googleId),
   lastLoginAt: user.lastLoginAt ?? null,
   createdAt: user.createdAt ?? new Date(),
   updatedAt: user.updatedAt ?? new Date(),
@@ -255,7 +260,7 @@ export const googleAuth = async (
   const existingEmailUser = await userRepository.findUserByEmail(payload.email);
   if (existingEmailUser) {
     throw new AppError(
-      "An account with this email already exists. Please log in with your email and password.",
+      "An account with this email already exists. Please log in with your email and password to link your Google account.",
       409,
       "USER_ALREADY_EXISTS",
     );
@@ -300,3 +305,89 @@ export const googleAuth = async (
   };
 };
 
+
+export const linkGoogleAccount = async (
+  userId: string,
+  input: GoogleAuthInput,
+): Promise<{ user: SafeUser; message: string }> => {
+  const payload = await verifyGoogleIdToken(input.credential);
+
+  const currentUser = await userRepository.findUserById(userId);
+  if (!currentUser) {
+    throw new AppError("User not found", 404, "USER_NOT_FOUND");
+  }
+
+  if (currentUser.status === USER_STATUSES.SUSPENDED) {
+    throw new AppError("Account is suspended", 403, "ACCOUNT_SUSPENDED");
+  }
+
+  if (currentUser.status === USER_STATUSES.DISABLED) {
+    throw new AppError("Account is disabled", 403, "ACCOUNT_DISABLED");
+  }
+
+  if (currentUser.status !== USER_STATUSES.ACTIVE) {
+    throw new AppError("Account is not active", 403, "ACCOUNT_NOT_ACTIVE");
+  }
+
+  // Check if this Google identity is already linked to the current user
+  if (currentUser.googleId === payload.sub) {
+    throw new AppError(
+      "This Google account is already linked to your profile",
+      409,
+      "GOOGLE_ALREADY_LINKED",
+    );
+  }
+
+  // Check if the current user already has a different Google account linked
+  if (currentUser.googleId) {
+    throw new AppError(
+      "Your account is already linked to a different Google account",
+      409,
+      "ACCOUNT_ALREADY_LINKED",
+    );
+  }
+
+  // Check if this Google identity is already linked to another NexaMind user
+  const existingGoogleUser = await userRepository.findUserByGoogleId(
+    payload.sub,
+  );
+  if (
+    existingGoogleUser &&
+    existingGoogleUser._id.toString() !== currentUser._id.toString()
+  ) {
+    throw new AppError(
+      "This Google account is already linked to another NexaMind account",
+      409,
+      "GOOGLE_ACCOUNT_IN_USE",
+    );
+  }
+
+  let updatedUser;
+  try {
+    updatedUser = await userRepository.linkGoogleAccount(
+      currentUser._id.toString(),
+      payload.sub,
+    );
+  } catch (error: unknown) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error as { code: unknown }).code === 11000
+    ) {
+      throw new AppError(
+        "This Google account is already linked to another NexaMind account",
+        409,
+        "GOOGLE_ACCOUNT_IN_USE",
+      );
+    }
+    throw error;
+  }
+
+  const activeUser = updatedUser ?? currentUser;
+
+  return {
+    user: toSafeUser(activeUser),
+    message: "Google account successfully linked",
+  };
+};

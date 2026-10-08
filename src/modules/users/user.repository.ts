@@ -46,3 +46,13 @@ export const updateLastLoginAt = async (userId: string) => {
     { returnDocument: "after" },
   );
 };
+export const linkGoogleAccount = async (
+  userId: string,
+  googleId: string,
+) => {
+  return User.findByIdAndUpdate(
+    userId,
+    { googleId },
+    { returnDocument: "after" },
+  );
+};

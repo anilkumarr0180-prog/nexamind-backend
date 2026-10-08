@@ -68,7 +68,6 @@ userSchema.index(
   { googleId: 1 },
   {
     unique: true,
-    sparse: true,
     partialFilterExpression: { googleId: { $type: "string" } },
   },
 );
