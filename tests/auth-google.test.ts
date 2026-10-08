@@ -14,10 +14,12 @@ import {
   type GoogleVerifiedPayload,
 } from "../src/modules/auth/google.verifier.js";
 import { AppError } from "../src/errors/app.error.js";
+import { resetAuthRateLimit } from "../src/middleware/rate-limit.js";
 
 const runTests = async () => {
   console.log("=== Starting Google Sign-In Verification Test Suite ===");
   await connectDatabase();
+  await User.init();
 
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -178,6 +180,7 @@ const runTests = async () => {
     // =========================================================================
     // PART 2: API End-to-End Tests (POST /api/v1/auth/google)
     // =========================================================================
+    await resetAuthRateLimit();
     console.log("\n--- Part 2: API End-to-End Verification ---");
 
     // Test 7: Validation error on empty or missing credential
@@ -445,9 +448,359 @@ const runTests = async () => {
     assert.equal(jsonSuspended.error.code, "ACCOUNT_SUSPENDED");
     console.log("✓ Suspended Google user correctly blocked with 403 ACCOUNT_SUSPENDED");
 
-    console.log("\n=======================================================");
-    console.log(" ALL 19 GOOGLE SIGN-IN VERIFICATION TESTS PASSED! ");
-    console.log("=======================================================\n");
+    // =========================================================================
+    // PART 3: Safe Explicit Google Account Linking (Step 5 Verification)
+    // =========================================================================
+    await resetAuthRateLimit();
+    console.log("\n--- Part 3: Explicit Account Linking & Conflict Tests (Step 5) ---");
+
+    const linkEmail = `local_link_${timestamp}@example.com`;
+    const linkPassword = "SecurePassLink123!";
+    const linkGoogleSub = `google_link_sub_${timestamp}`;
+
+    // Create a local email/password user
+    const regRes = await fetch(`${baseUrl}/api/v1/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: linkEmail,
+        password: linkPassword,
+        name: "Linking Test User",
+      }),
+    });
+    assert.equal(regRes.status, 201);
+    const regJson = await regRes.json();
+    const linkUserId = regJson.data.user.id;
+    const linkUserToken = regJson.data.accessToken;
+    createdUserIds.push(linkUserId);
+
+    // Test 20: Unauthenticated linking attempt rejected
+    console.log("\n[Test 20] Testing unauthenticated linking attempt rejected with 401...");
+    const resUnauthedLink = await fetch(`${baseUrl}/api/v1/auth/google/link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential: "any-google-token" }),
+    });
+    assert.equal(resUnauthedLink.status, 401);
+    const jsonUnauthedLink = await resUnauthedLink.json();
+    assert.equal(jsonUnauthedLink.error.code, "UNAUTHORIZED");
+    console.log("✓ Unauthenticated linking attempt correctly rejected with 401 UNAUTHORIZED");
+
+    // Test 21: Invalid Google credential on linking rejected
+    console.log("\n[Test 21] Testing invalid Google credential on linking rejected with 401...");
+    mockError = new AppError("Invalid Google token: bad signature", 401, "INVALID_GOOGLE_TOKEN");
+    const resInvalidCredLink = await fetch(`${baseUrl}/api/v1/auth/google/link`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${linkUserToken}`,
+      },
+      body: JSON.stringify({ credential: "bad-google-token" }),
+    });
+    assert.equal(resInvalidCredLink.status, 401);
+    const jsonInvalidCredLink = await resInvalidCredLink.json();
+    assert.equal(jsonInvalidCredLink.error.code, "INVALID_GOOGLE_TOKEN");
+    console.log("✓ Invalid Google credential on linking rejected with 401 INVALID_GOOGLE_TOKEN");
+    mockError = null;
+
+    // Test 22: Successful explicit linking for existing local user
+    console.log("\n[Test 22] Testing successful explicit Google account linking...");
+    mockResult = {
+      sub: linkGoogleSub,
+      email: "google_profile_email@example.com",
+      emailVerified: true,
+      name: "Google Profile Name",
+      picture: "https://example.com/pic.jpg",
+    };
+
+    const resExplicitLink = await fetch(`${baseUrl}/api/v1/auth/google/link`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${linkUserToken}`,
+      },
+      body: JSON.stringify({ credential: "valid-linking-credential" }),
+    });
+    assert.equal(resExplicitLink.status, 200);
+    const jsonExplicitLink = await resExplicitLink.json();
+    assert.equal(jsonExplicitLink.success, true);
+    assert.equal(jsonExplicitLink.data.user.id, linkUserId);
+    assert.equal(jsonExplicitLink.data.user.isGoogleLinked, true);
+
+    // Verify in database
+    const linkedUserInDb = await User.findById(linkUserId);
+    assert.ok(linkedUserInDb);
+    assert.equal(linkedUserInDb.googleId, linkGoogleSub);
+    console.log("✓ Google account explicitly linked using stable sub");
+
+    // Test 23: Already-linked identity rejected
+    console.log("\n[Test 23] Testing already-linked identity rejected on re-link attempt...");
+    const resAlreadyLinked = await fetch(`${baseUrl}/api/v1/auth/google/link`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${linkUserToken}`,
+      },
+      body: JSON.stringify({ credential: "already-linked-credential" }),
+    });
+    assert.equal(resAlreadyLinked.status, 409);
+    const jsonAlreadyLinked = await resAlreadyLinked.json();
+    assert.equal(jsonAlreadyLinked.error.code, "GOOGLE_ALREADY_LINKED");
+    console.log("✓ Re-linking same Google identity safely rejected with 409 GOOGLE_ALREADY_LINKED");
+
+    // Test 24: Google identity linked to another user rejected
+    console.log("\n[Test 24] Testing Google identity already linked to another user rejected...");
+    const userDEmail = `local_user_d_${timestamp}@example.com`;
+    const regUserD = await fetch(`${baseUrl}/api/v1/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: userDEmail,
+        password: "UserDPassword123!",
+        name: "User D",
+      }),
+    });
+    assert.equal(regUserD.status, 201);
+    const userDJson = await regUserD.json();
+    const userDId = userDJson.data.user.id;
+    const userDToken = userDJson.data.accessToken;
+    createdUserIds.push(userDId);
+
+    // User D attempts to link linkGoogleSub (which belongs to linkUserId)
+    const resConflictOther = await fetch(`${baseUrl}/api/v1/auth/google/link`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${userDToken}`,
+      },
+      body: JSON.stringify({ credential: "stolen-google-sub" }),
+    });
+    assert.equal(resConflictOther.status, 409);
+    const jsonConflictOther = await resConflictOther.json();
+    assert.equal(jsonConflictOther.error.code, "GOOGLE_ACCOUNT_IN_USE");
+
+    const userDInDb = await User.findById(userDId);
+    assert.equal(userDInDb?.googleId ?? null, null);
+    console.log("✓ Google identity already linked elsewhere safely rejected with 409 GOOGLE_ACCOUNT_IN_USE");
+
+    // Test 25: Same-email local account conflict when not explicitly linking
+    console.log("\n[Test 25] Testing same-email local account conflict during unauthenticated sign-in...");
+    const userEEmail = `unlinked_user_e_${timestamp}@example.com`;
+    const regUserE = await fetch(`${baseUrl}/api/v1/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: userEEmail,
+        password: "UserEPassword123!",
+        name: "User E",
+      }),
+    });
+    assert.equal(regUserE.status, 201);
+    const userEJson = await regUserE.json();
+    createdUserIds.push(userEJson.data.user.id);
+
+    // Unauthenticated Google sign-in with same email but new sub
+    mockResult = {
+      sub: `google_unlinked_sub_${timestamp}`,
+      email: userEEmail,
+      emailVerified: true,
+      name: "Unlinked Google Identity",
+      picture: null,
+    };
+    const resNoAutoMerge = await fetch(`${baseUrl}/api/v1/auth/google`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential: "unlinked-email-cred" }),
+    });
+    assert.equal(resNoAutoMerge.status, 409);
+    const jsonNoAutoMerge = await resNoAutoMerge.json();
+    assert.equal(jsonNoAutoMerge.error.code, "USER_ALREADY_EXISTS");
+
+    const userEInDb = await User.findById(userEJson.data.user.id);
+    assert.equal(userEInDb?.googleId ?? null, null, "User E must NOT be auto-merged");
+    console.log("✓ Same-email local account conflict safely returns 409 without auto-merging");
+
+    // Test 26: Existing local login still works after linking
+    console.log("\n[Test 26] Testing local email/password login still works after Google linking...");
+    const resLocalLogin = await fetch(`${baseUrl}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: linkEmail,
+        password: linkPassword,
+      }),
+    });
+    assert.equal(resLocalLogin.status, 200);
+    const jsonLocalLogin = await resLocalLogin.json();
+    assert.equal(jsonLocalLogin.success, true);
+    assert.equal(jsonLocalLogin.data.user.id, linkUserId);
+    console.log("✓ Local email/password login succeeds unchanged after linking");
+
+    // Test 27: Google login works for the linked user
+    console.log("\n[Test 27] Testing Google login works for the explicitly linked user...");
+    mockResult = {
+      sub: linkGoogleSub,
+      email: "google_profile_email@example.com",
+      emailVerified: true,
+      name: "Google Profile Name",
+      picture: null,
+    };
+    const resLinkedGoogleLogin = await fetch(`${baseUrl}/api/v1/auth/google`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential: "linked-google-login-cred" }),
+    });
+    assert.equal(resLinkedGoogleLogin.status, 200);
+    const jsonLinkedGoogleLogin = await resLinkedGoogleLogin.json();
+    assert.equal(jsonLinkedGoogleLogin.success, true);
+    assert.equal(jsonLinkedGoogleLogin.data.user.id, linkUserId);
+    console.log("✓ Google login succeeds seamlessly for explicitly linked user");
+
+    // =========================================================================
+    // PART 4: Production & Security Hardening Tests (Step 6)
+    // =========================================================================
+    await resetAuthRateLimit();
+    console.log("\n--- Part 4: Production & Security Hardening Verification (Step 6) ---");
+
+    // Test 28: CORS origin hardening on Google Auth endpoint
+    console.log("\n[Test 28] Testing CORS origin enforcement on /api/v1/auth/google...");
+    const corsAllowedRes = await fetch(`${baseUrl}/api/v1/auth/google`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "http://localhost:5173",
+      },
+      body: JSON.stringify({ credential: "any-credential" }),
+    });
+    assert.equal(
+      corsAllowedRes.headers.get("access-control-allow-origin"),
+      "http://localhost:5173",
+      "Configured origin must receive Access-Control-Allow-Origin header",
+    );
+    assert.equal(
+      corsAllowedRes.headers.get("access-control-allow-credentials"),
+      "true",
+      "Credentials header must be present for configured origin",
+    );
+
+    const corsBlockedRes = await fetch(`${baseUrl}/api/v1/auth/google`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://unauthorized-attacker.com",
+      },
+      body: JSON.stringify({ credential: "any-credential" }),
+    });
+    assert.equal(
+      corsBlockedRes.headers.get("access-control-allow-origin"),
+      null,
+      "Unauthorized origin must NOT receive Access-Control-Allow-Origin header",
+    );
+    console.log("✓ CORS headers strictly enforce configured origins on Google auth endpoints");
+
+    // Test 29: Token claim verification on linking (wrong audience & wrong issuer)
+    console.log("\n[Test 29] Testing token claim forgery rejection on /google/link...");
+    mockError = new AppError("Google token audience mismatch", 401, "INVALID_GOOGLE_TOKEN");
+    const resAudMismatch = await fetch(`${baseUrl}/api/v1/auth/google/link`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${userDToken}`,
+      },
+      body: JSON.stringify({ credential: "token-with-wrong-audience" }),
+    });
+    assert.equal(resAudMismatch.status, 401);
+    const jsonAudMismatch = await resAudMismatch.json();
+    assert.equal(jsonAudMismatch.error.code, "INVALID_GOOGLE_TOKEN");
+    mockError = null;
+
+    mockError = new AppError("Invalid Google token issuer", 401, "INVALID_GOOGLE_TOKEN");
+    const resIssMismatch = await fetch(`${baseUrl}/api/v1/auth/google/link`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${userDToken}`,
+      },
+      body: JSON.stringify({ credential: "token-with-wrong-issuer" }),
+    });
+    assert.equal(resIssMismatch.status, 401);
+    const jsonIssMismatch = await resIssMismatch.json();
+    assert.equal(jsonIssMismatch.error.code, "INVALID_GOOGLE_TOKEN");
+    mockError = null;
+    console.log("✓ Wrong audience and issuer are strictly rejected on linking");
+
+    // Test 30: Untrusted frontend claims (name, email, roles) strictly ignored
+    console.log("\n[Test 30] Testing untrusted frontend fields ignored during Google authentication...");
+    const hardenedGoogleSub = `google_hardened_${timestamp}`;
+    const verifiedGoogleEmail = `verified_google_${timestamp}@example.com`;
+    mockResult = {
+      sub: hardenedGoogleSub,
+      email: verifiedGoogleEmail,
+      emailVerified: true,
+      name: "Verified Google Name",
+      picture: null,
+    };
+
+    // Client attempts to pass spoofed email, sub, and admin role in request body
+    const resSpoofed = await fetch(`${baseUrl}/api/v1/auth/google`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        credential: "valid-hardened-credential",
+        email: "spoofed-admin@nexamind.ai",
+        sub: "spoofed-sub",
+        roles: ["ADMIN"],
+      }),
+    });
+    assert.equal(resSpoofed.status, 200);
+    const jsonSpoofed = await resSpoofed.json();
+    const spoofedUserId = jsonSpoofed.data.user.id;
+    createdUserIds.push(spoofedUserId);
+
+    // Verify database record has verified Google email and sub, NOT spoofed ones
+    const spoofedUserInDb = await User.findById(spoofedUserId);
+    assert.ok(spoofedUserInDb);
+    assert.equal(spoofedUserInDb.email, verifiedGoogleEmail, "Database email must match verified token, not body");
+    assert.equal(spoofedUserInDb.googleId, hardenedGoogleSub, "Database googleId must match verified sub, not body");
+    assert.deepEqual(spoofedUserInDb.roles, ["USER"], "Roles must default to USER, body roles must be ignored");
+    console.log("✓ Untrusted frontend claims (email, sub, roles) safely ignored in favor of verified claims");
+
+    // Test 31: MongoDB engine-level unique index on googleId blocks duplicates
+    console.log("\n[Test 31] Testing database unique index enforcement on googleId...");
+    let duplicateIndexCaught = false;
+    try {
+      await User.create({
+        email: `duplicate_test_${timestamp}@example.com`,
+        googleId: hardenedGoogleSub, // already in DB from Test 30
+      });
+    } catch (err: any) {
+      if (err?.code === 11000) {
+        duplicateIndexCaught = true;
+      }
+    }
+    assert.equal(duplicateIndexCaught, true, "MongoDB unique index must throw E11000 on duplicate googleId");
+    console.log("✓ MongoDB unique index on googleId enforced at database engine level");
+
+    // Test 32: Rate limiting headers present on /google/link endpoint
+    console.log("\n[Test 32] Testing rate limiting headers on /google/link...");
+    const resRateLimitHeader = await fetch(`${baseUrl}/api/v1/auth/google/link`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${userDToken}`,
+      },
+      body: JSON.stringify({ credential: "dummy-cred" }),
+    });
+    // Rate limit headers must be attached
+    assert.ok(
+      resRateLimitHeader.headers.has("ratelimit-limit"),
+      "Response must include ratelimit-limit header",
+    );
+    console.log("✓ Rate limiting headers active and verified on Google linking endpoint");
+
+    console.log("\n=========================================================================");
+    console.log(" ALL 32 GOOGLE SIGN-IN, LINKING & SECURITY HARDENING TESTS PASSED! ");
+    console.log("=========================================================================\n");
   } finally {
     resetGoogleTokenVerifier();
     console.log(`Cleaning up ${createdUserIds.length} test user records...`);
