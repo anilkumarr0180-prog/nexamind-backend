@@ -221,6 +221,19 @@ export const envSchema = z
       .string()
       .trim()
       .optional(),
+
+    // Google OAuth Configuration
+    GOOGLE_CLIENT_ID: z
+      .string()
+      .trim()
+      .transform((val) => (val.length > 0 ? val : undefined))
+      .optional(),
+
+    GOOGLE_CLIENT_SECRET: z
+      .string()
+      .trim()
+      .transform((val) => (val.length > 0 ? val : undefined))
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (

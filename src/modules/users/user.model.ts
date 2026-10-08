@@ -29,8 +29,14 @@ const userSchema = new Schema(
 
     passwordHash: {
       type: String,
-      required: true,
+      required: false,
       select: false,
+    },
+
+    googleId: {
+      type: String,
+      default: null,
+      trim: true,
     },
 
     status: {
@@ -53,10 +59,18 @@ const userSchema = new Schema(
     },
   },
   {
-  timestamps: true,
-},
+    timestamps: true,
+  },
 );
 
 userSchema.index({ email: 1 }, { unique: true });
+userSchema.index(
+  { googleId: 1 },
+  {
+    unique: true,
+    sparse: true,
+    partialFilterExpression: { googleId: { $type: "string" } },
+  },
+);
 
 export const User = model("User", userSchema);

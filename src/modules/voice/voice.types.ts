@@ -9,4 +9,6 @@ export interface TranscribeAudioOptions {
   language?: string | undefined;
   prompt?: string | undefined;
   temperature?: number | undefined;
+  signal?: AbortSignal | undefined;
+  timeoutMs?: number | undefined;
 }

@@ -1,7 +1,11 @@
 import type { Request, Response } from "express";
 import { AppError } from "../../errors/app.error.js";
 import * as authService from "./auth.service.js";
-import type { LoginInput, RegisterInput } from "./auth.validation.js";
+import type {
+  GoogleAuthInput,
+  LoginInput,
+  RegisterInput,
+} from "./auth.validation.js";
 
 export const register = async (
   req: Request<Record<string, never>, unknown, RegisterInput>,
@@ -20,6 +24,18 @@ export const login = async (
   res: Response,
 ): Promise<void> => {
   const result = await authService.login(req.body);
+
+  res.status(200).json({
+    success: true,
+    data: result,
+  });
+};
+
+export const googleAuth = async (
+  req: Request<Record<string, never>, unknown, GoogleAuthInput>,
+  res: Response,
+): Promise<void> => {
+  const result = await authService.googleAuth(req.body);
 
   res.status(200).json({
     success: true,
