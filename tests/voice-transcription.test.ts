@@ -5,7 +5,11 @@ import app from "../src/app.js";
 import { connectDatabase, disconnectDatabase } from "../src/config/database.js";
 import { generateAccessToken } from "../src/utils/jwt.js";
 import { User } from "../src/modules/users/user.model.js";
-import { VoiceService } from "../src/modules/voice/voice.service.js";
+import {
+  VoiceService,
+  normalizeAudioFilenameAndMime,
+  DEFAULT_WHISPER_MODEL,
+} from "../src/modules/voice/voice.service.js";
 import { AppError } from "../src/errors/app.error.js";
 import { env } from "../src/config/env.js";
 
@@ -68,7 +72,45 @@ const runTests = async () => {
       console.log("✓ Empty audio buffer safely rejected with AppError(400, INVALID_AUDIO)");
     }
 
-    console.log("\n[Scenario 2] Testing VoiceService with missing API key...");
+    console.log("\n[Scenario 2] Testing VoiceService with too-short audio buffer (< 100 bytes)...");
+    {
+      const service = new VoiceService();
+      await assert.rejects(
+        async () => {
+          await service.transcribeAudio(Buffer.alloc(50), "short.webm", "audio/webm");
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof AppError);
+          assert.equal((err as AppError).statusCode, 400);
+          assert.equal((err as AppError).code, "INVALID_AUDIO");
+          return true;
+        },
+      );
+      console.log("✓ Too-short audio buffer safely rejected with AppError(400, INVALID_AUDIO)");
+    }
+
+    console.log("\n[Scenario 3] Testing normalizeAudioFilenameAndMime consistency...");
+    {
+      const norm1 = normalizeAudioFilenameAndMime("blob", "audio/webm;codecs=opus");
+      assert.equal(norm1.filename, "recording.webm");
+      assert.equal(norm1.mimetype, "audio/webm");
+
+      const norm2 = normalizeAudioFilenameAndMime("speech.opus", "audio/ogg;codecs=opus");
+      assert.equal(norm2.filename, "speech.ogg");
+      assert.equal(norm2.mimetype, "audio/ogg");
+
+      const norm3 = normalizeAudioFilenameAndMime("safari_audio", "audio/mp4");
+      assert.equal(norm3.filename, "safari_audio.m4a");
+      assert.equal(norm3.mimetype, "audio/mp4");
+
+      const norm4 = normalizeAudioFilenameAndMime("valid.wav", "audio/wav");
+      assert.equal(norm4.filename, "valid.wav");
+      assert.equal(norm4.mimetype, "audio/wav");
+
+      console.log("✓ Filename and MIME type normalization maintains Groq Whisper format consistency");
+    }
+
+    console.log("\n[Scenario 4] Testing VoiceService with missing API key...");
     {
       const service = new VoiceService("");
       const validWav = createValidWavBuffer();
@@ -92,7 +134,46 @@ const runTests = async () => {
       console.log("✓ Missing Groq API key safely rejected with AppError(502, VOICE_PROVIDER_ERROR)");
     }
 
-    console.log("\n[Scenario 3] Testing VoiceService calling Groq STT API...");
+    console.log("\n[Scenario 5] Testing VoiceService timeout handling...");
+    {
+      const service = new VoiceService();
+      const validWav = createValidWavBuffer();
+      await assert.rejects(
+        async () => {
+          // Timeout after 1ms to trigger the timeout handler reliably
+          await service.transcribeAudio(validWav, "test.wav", "audio/wav", { timeoutMs: 1 });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof AppError);
+          assert.equal((err as AppError).statusCode, 504);
+          assert.equal((err as AppError).code, "VOICE_PROVIDER_TIMEOUT");
+          return true;
+        },
+      );
+      console.log("✓ Request timeout safely aborts and raises AppError(504, VOICE_PROVIDER_TIMEOUT)");
+    }
+
+    console.log("\n[Scenario 6] Testing VoiceService client cancellation handling...");
+    {
+      const service = new VoiceService();
+      const validWav = createValidWavBuffer();
+      const controller = new AbortController();
+      controller.abort();
+      await assert.rejects(
+        async () => {
+          await service.transcribeAudio(validWav, "test.wav", "audio/wav", { signal: controller.signal });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof AppError);
+          assert.equal((err as AppError).statusCode, 499);
+          assert.equal((err as AppError).code, "REQUEST_CANCELLED");
+          return true;
+        },
+      );
+      console.log("✓ Pre-aborted signal safely throws AppError(499, REQUEST_CANCELLED)");
+    }
+
+    console.log("\n[Scenario 7] Testing VoiceService calling Groq STT API...");
     {
       const service = new VoiceService();
       const validWav = createValidWavBuffer();
@@ -101,7 +182,7 @@ const runTests = async () => {
       console.log(`✓ VoiceService received transcript from Groq STT: "${result.text}"`);
     }
 
-    console.log("\n[Scenario 4] Testing /api/v1/voice/transcribe unauthenticated...");
+    console.log("\n[Scenario 8] Testing /api/v1/voice/transcribe unauthenticated...");
     {
       const res = await fetch(`http://localhost:${port}/api/v1/voice/transcribe`, {
         method: "POST",
@@ -112,7 +193,7 @@ const runTests = async () => {
       console.log("✓ Unauthenticated request rejected with 401 UNAUTHORIZED");
     }
 
-    console.log("\n[Scenario 5] Testing /api/v1/voice/transcribe without audio file...");
+    console.log("\n[Scenario 9] Testing /api/v1/voice/transcribe without audio file...");
     {
       const emptyForm = new FormData();
       const res = await fetch(`http://localhost:${port}/api/v1/voice/transcribe`, {
@@ -128,7 +209,7 @@ const runTests = async () => {
       console.log("✓ Request without audio file rejected with 400 MISSING_FILE");
     }
 
-    console.log("\n[Scenario 6] Testing /api/v1/voice/transcribe with invalid file type...");
+    console.log("\n[Scenario 10] Testing /api/v1/voice/transcribe with invalid file type...");
     {
       const badForm = new FormData();
       const fakeText = new File([Buffer.from("hello world")], "test.txt", { type: "text/plain" });
@@ -146,7 +227,25 @@ const runTests = async () => {
       console.log("✓ Non-audio file rejected with 400 INVALID_MIME_TYPE");
     }
 
-    console.log("\n[Scenario 7] Testing /api/v1/voice/transcribe with valid audio upload...");
+    console.log("\n[Scenario 11] Testing /api/v1/voice/transcribe with too-short audio file (< 100 bytes)...");
+    {
+      const tinyForm = new FormData();
+      const tinyAudio = new File([new Uint8Array(40)], "recording.webm", { type: "audio/webm" });
+      tinyForm.append("file", tinyAudio);
+      const res = await fetch(`http://localhost:${port}/api/v1/voice/transcribe`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: tinyForm,
+      });
+      assert.equal(res.status, 400);
+      const data = await res.json() as any;
+      assert.equal(data.error?.code, "INVALID_AUDIO");
+      console.log("✓ Too-short audio rejected with 400 INVALID_AUDIO");
+    }
+
+    console.log("\n[Scenario 12] Testing /api/v1/voice/transcribe with valid audio upload...");
     {
       const validWav = createValidWavBuffer();
       const form = new FormData();
@@ -167,7 +266,7 @@ const runTests = async () => {
     }
 
     console.log("\n==================================================");
-    console.log(" ALL VOICE TRANSCRIPTION TESTS PASSED (7/7)       ");
+    console.log(" ALL VOICE TRANSCRIPTION TESTS PASSED (12/12)     ");
     console.log("==================================================\n");
   } finally {
     server.close();

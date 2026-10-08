@@ -17,9 +17,23 @@ export const findUserByEmail = async (
   return query.exec();
 };
 
+export const findUserByGoogleId = async (
+  googleId: string,
+  includePasswordHash = false,
+) => {
+  const query = User.findOne({ googleId });
+
+  if (includePasswordHash) {
+    query.select("+passwordHash");
+  }
+
+  return query.exec();
+};
+
 export const createUser = async (data: {
   email: string;
-  passwordHash: string;
+  passwordHash?: string;
+  googleId?: string;
   name?: string | null;
 }) => {
   return User.create(data);

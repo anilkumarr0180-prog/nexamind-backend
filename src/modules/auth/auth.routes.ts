@@ -1,6 +1,10 @@
 import { Router } from "express";
 import * as authController from "./auth.controller.js";
-import { loginSchema, registerSchema } from "./auth.validation.js";
+import {
+  googleAuthSchema,
+  loginSchema,
+  registerSchema,
+} from "./auth.validation.js";
 import { validate } from "../../middleware/validate.js";
 import { authenticate } from "../../middleware/auth.js";
 import { authRateLimiter } from "../../middleware/rate-limit.js";
@@ -18,6 +22,12 @@ router.post(
   authRateLimiter,
   validate(loginSchema),
   authController.login,
+);
+router.post(
+  "/google",
+  authRateLimiter,
+  validate(googleAuthSchema),
+  authController.googleAuth,
 );
 router.get("/me", authenticate, authController.getMe);
 

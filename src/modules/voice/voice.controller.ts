@@ -13,6 +13,10 @@ export const handleTranscribeAudio = async (
       throw new AppError("Audio file is required in field 'file' or 'audio'", 400, "MISSING_FILE");
     }
 
+    if (!file.buffer || file.buffer.length < 100) {
+      throw new AppError("Audio recording is empty or too short. Please speak into the microphone.", 400, "INVALID_AUDIO");
+    }
+
     const language = typeof req.body?.language === "string" ? req.body.language : undefined;
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : undefined;
 
@@ -20,7 +24,7 @@ export const handleTranscribeAudio = async (
       file.buffer,
       file.originalname || "recording.webm",
       file.mimetype || "audio/webm",
-      { language, prompt },
+      { language, prompt, signal: req.signal },
     );
 
     res.status(200).json({

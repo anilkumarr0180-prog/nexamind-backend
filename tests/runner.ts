@@ -57,6 +57,11 @@ const TEST_SUITES: TestSuite[] = [
     file: "auth-registration.test.ts",
   },
   {
+    id: "auth-google",
+    name: "Auth: Google Sign-In Server Verification",
+    file: "auth-google.test.ts",
+  },
+  {
     id: "cors",
     name: "F04: CORS Hardening",
     file: "cors.test.ts",
