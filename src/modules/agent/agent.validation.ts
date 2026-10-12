@@ -28,6 +28,11 @@ export const executeAgentSchema = z.object({
         .optional(),
       context: z.record(z.string(), z.unknown()).optional(),
       stream: z.boolean().optional(),
+      idempotencyKey: z
+        .string()
+        .trim()
+        .max(128, "Idempotency key cannot exceed 128 characters")
+        .optional(),
     })
     .strict(),
 });

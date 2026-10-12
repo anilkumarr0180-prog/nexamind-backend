@@ -18,9 +18,17 @@ export const handleChat = async (
     throw new AppError("Authentication required", 401, "UNAUTHORIZED");
   }
 
+  const idempotencyKey =
+    (req.headers["idempotency-key"] as string | undefined) ||
+    (req.headers["x-request-id"] as string | undefined) ||
+    req.body.idempotencyKey;
+
   const result = await orchestratorService.processChatRequest(
     userId,
-    req.body,
+    {
+      ...req.body,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    },
   );
 
   res.status(200).json({
@@ -68,9 +76,17 @@ export const handleChatStream = async (
   };
 
   try {
+    const idempotencyKey =
+      (req.headers["idempotency-key"] as string | undefined) ||
+      (req.headers["x-request-id"] as string | undefined) ||
+      req.body.idempotencyKey;
+
     const result = await orchestratorService.processChatStream(
       userId,
-      req.body,
+      {
+        ...req.body,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      },
       {
         onStart: (startData) => {
           ensureHeaders();

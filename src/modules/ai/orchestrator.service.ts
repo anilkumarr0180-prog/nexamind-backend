@@ -7,7 +7,7 @@ import {
 } from "./context-builder.service.js";
 import { isValidWebUrl } from "../agent/tools/web-search.tool.js";
 import type { ToolCallInfo } from "../agent/agent.types.js";
-import type { Types } from "mongoose";
+import { Types } from "mongoose";
 import { env } from "../../config/env.js";
 import { AppError } from "../../errors/app.error.js";
 import { CONVERSATION_STATUSES } from "../conversations/conversation.model.js";
@@ -38,6 +38,26 @@ const activeGenerations = new Set<string>();
 
 export const isGenerationActiveForConversation = (conversationId: string): boolean => {
   return activeGenerations.has(conversationId);
+};
+
+/**
+ * Process-Local Conversation Generation Lock
+ *
+ * NOTE: This concurrency coordination uses an in-memory Set local to the Node.js process.
+ * In a multi-instance or cluster environment, locks are enforced per-process rather than
+ * globally across all instances. For production deployments with horizontal scaling,
+ * a distributed shared lock (such as Redis Redlock) should be introduced.
+ */
+export const acquireConversationGenerationLock = (conversationId: string): boolean => {
+  if (activeGenerations.has(conversationId)) {
+    return false;
+  }
+  activeGenerations.add(conversationId);
+  return true;
+};
+
+export const releaseConversationGenerationLock = (conversationId: string): void => {
+  activeGenerations.delete(conversationId);
 };
 
 export const clearActiveGenerations = (): void => {
@@ -102,6 +122,7 @@ export type ChatRequestInput = {
   content: string;
   editMessageId?: string | undefined;
   attachmentId?: string | null | undefined;
+  idempotencyKey?: string | undefined;
 };
 
 export type OrchestratedChatResult = {
@@ -398,8 +419,15 @@ export const processChatRequest = async (
       );
     }
 
+    // 3d. Resolve stable referenceId for credit deduction and refund idempotency
+    const stableId = input.idempotencyKey?.trim() || new Types.ObjectId().toString();
+    const creditReferenceId = input.editMessageId
+      ? `chat_edit_${input.editMessageId}_${stableId}`
+      : `chat_${conversation._id.toString()}_${stableId}`;
+    const refundReferenceId = `refund_${creditReferenceId}`;
+
     // 4. Deduct application credits atomically BEFORE invoking the AI provider
-    await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+    await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST, creditReferenceId);
 
     let userMessage:
       | Awaited<ReturnType<typeof messageRepository.createMessage>>
@@ -429,6 +457,7 @@ export const processChatRequest = async (
       const aiMessages = await buildFullChatContext({
         userId,
         conversationId: conversation._id,
+        conversation,
         userQuery: trimmedContent,
         maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
         maxChars: env.AI_MAX_CONTEXT_CHARS,
@@ -516,7 +545,7 @@ export const processChatRequest = async (
   } catch (executionError: unknown) {
     // Compensate / refund deducted credits
     try {
-      await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+      await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST, refundReferenceId);
     } catch (refundError) {
       console.error(
         "Credit refund failed during AI chat failure compensation:",
@@ -574,21 +603,20 @@ export const processChatRequest = async (
     | null = null;
 
   try {
-    totalMessages =
-      await messageRepository.countMessagesByConversationId(
-        conversation._id,
-      );
-
     updatedConversation =
       await conversationRepository.updateConversation(
         conversation._id,
         userId,
         {
           lastMessageAt: assistantMessage.createdAt ?? new Date(),
-          messageCount: totalMessages,
+          messageCountIncrement: 2,
           activeLeafMessageId: assistantMessage._id,
         },
       );
+
+    totalMessages =
+      updatedConversation?.messageCount ??
+      ((conversation.messageCount || 0) + 2);
   } catch (metadataError) {
     console.error(
       "Non-fatal error updating conversation metadata after chat completion:",
@@ -596,22 +624,24 @@ export const processChatRequest = async (
     );
   }
 
-  // 9b. Non-critical automatic memory extraction (non-blocking)
-  memoryService
-    .extractAndSaveMemories(
-      userId,
-      {
-        userMessageContent: userMessage.content,
-        assistantMessageContent: assistantMessage.content,
-      },
-      provider,
-    )
-    .catch((extractionError) => {
-      console.error(
-        "Non-fatal error during automatic memory extraction:",
-        extractionError,
-      );
-    });
+  // 9b. Non-critical automatic memory extraction (non-blocking, skip trivial inputs)
+  if (!memoryService.isTrivialMessage(userMessage.content)) {
+    memoryService
+      .extractAndSaveMemories(
+        userId,
+        {
+          userMessageContent: userMessage.content,
+          assistantMessageContent: assistantMessage.content,
+        },
+        provider,
+      )
+      .catch((extractionError) => {
+        console.error(
+          "Non-fatal error during automatic memory extraction:",
+          extractionError,
+        );
+      });
+  }
 
   // 9c. Non-critical automatic conversation summarization (non-blocking)
   summarizeConversationIfNeeded(
@@ -771,8 +801,15 @@ export const processChatStream = async (
       );
     }
 
+    // 3d. Resolve stable referenceId for credit deduction and refund idempotency
+    const stableStreamId = input.idempotencyKey?.trim() || new Types.ObjectId().toString();
+    const creditReferenceId = input.editMessageId
+      ? `chat_edit_${input.editMessageId}_${stableStreamId}`
+      : `chat_${conversation._id.toString()}_${stableStreamId}`;
+    const refundReferenceId = `refund_${creditReferenceId}`;
+
     // 4. Deduct application credits atomically BEFORE invoking the AI provider
-    await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+    await tokenService.deductCredits(userId, DEFAULT_CHAT_CREDIT_COST, creditReferenceId);
 
     let userMessage:
       | Awaited<ReturnType<typeof messageRepository.createMessage>>
@@ -824,6 +861,7 @@ export const processChatStream = async (
       const aiMessages = await buildFullChatContext({
         userId,
         conversationId: conversation._id,
+        conversation,
         userQuery: trimmedContent,
         maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
         maxChars: env.AI_MAX_CONTEXT_CHARS,
@@ -956,7 +994,7 @@ export const processChatStream = async (
     if (!hasMeaningfulContent) {
       // Aborted before ANY content was produced: refund credit & mark user message failed
       try {
-        await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+        await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST, refundReferenceId);
       } catch (refundError) {
         console.error("Credit refund failed on client abort before content:", refundError);
       }
@@ -976,7 +1014,7 @@ export const processChatStream = async (
   // 2. PROVIDER FAILURE with ZERO CONTENT
   if (streamError && !hasMeaningfulContent) {
     try {
-      await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+      await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST, refundReferenceId);
     } catch (refundError) {
       console.error(
         "Credit refund failed during AI chat stream failure compensation:",
@@ -1018,7 +1056,7 @@ export const processChatStream = async (
   // 3. ZERO-CONTENT RESPONSE (Stream finished normally with zero content)
   if (!signal?.aborted && !hasMeaningfulContent) {
     try {
-      await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST);
+      await tokenService.refundCredits(userId, DEFAULT_CHAT_CREDIT_COST, refundReferenceId);
     } catch {}
     if (userMessage?._id) {
       try {
@@ -1071,21 +1109,20 @@ export const processChatStream = async (
     | null = null;
 
   try {
-    totalMessages =
-      await messageRepository.countMessagesByConversationId(
-        conversation._id,
-      );
-
     updatedConversation =
       await conversationRepository.updateConversation(
         conversation._id,
         userId,
         {
           lastMessageAt: assistantMessage.createdAt ?? new Date(),
-          messageCount: totalMessages,
+          messageCountIncrement: 2,
           activeLeafMessageId: assistantMessage._id,
         },
       );
+
+    totalMessages =
+      updatedConversation?.messageCount ??
+      ((conversation.messageCount || 0) + 2);
   } catch (metadataError) {
     console.error(
       "Non-fatal error updating conversation metadata after stream completion:",
@@ -1116,8 +1153,8 @@ export const processChatStream = async (
   }
 
   // 5. SUCCESSFUL COMPLETION (no stream error, not aborted)
-  // 9b. Non-critical automatic memory extraction (non-blocking)
-  if (!signal?.aborted) {
+  // 9b. Non-critical automatic memory extraction (non-blocking, skip trivial inputs)
+  if (!signal?.aborted && !memoryService.isTrivialMessage(userMessage.content)) {
     memoryService
       .extractAndSaveMemories(
         userId,

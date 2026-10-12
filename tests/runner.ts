@@ -82,6 +82,26 @@ const TEST_SUITES: TestSuite[] = [
     file: "credit-failure.test.ts",
   },
   {
+    id: "credit-concurrency-integrity",
+    name: "Credits: Concurrency & Ledger Integrity",
+    file: "credit-concurrency-integrity.test.ts",
+  },
+  {
+    id: "background-llm-optimization",
+    name: "AI Performance: Background LLM Call Optimization",
+    file: "background-llm-optimization.test.ts",
+  },
+  {
+    id: "rag-retrieval-latency",
+    name: "RAG Performance: Retrieval Latency & Fallback",
+    file: "rag-retrieval-latency.test.ts",
+  },
+  {
+    id: "agent-concurrency-ratelimit",
+    name: "Agent Performance: Rate Limiting & Concurrency Protection",
+    file: "agent-concurrency-ratelimit.test.ts",
+  },
+  {
     id: "streaming-chat",
     name: "Chat UX Batch 2: Streaming & Stop Generating",
     file: "streaming-chat.test.ts",
