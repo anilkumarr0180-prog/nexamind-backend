@@ -449,6 +449,11 @@ const runTestSuite = async () => {
 
     mockProvider.failMode = "none";
 
+    // Create a second conversation for the same user to test user-level credit concurrency across conversations
+    const conv2 = await conversationService.createConversation(userId, {
+      title: "Concurrent Test Conversation 2",
+    });
+
     // Launch two simultaneous requests concurrently
     const [concurrentResA, concurrentResB] = await Promise.all([
       fetch(`${baseUrl}/api/v1/ai/chat`, {
@@ -469,7 +474,7 @@ const runTestSuite = async () => {
           Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify({
-          conversationId,
+          conversationId: conv2._id.toString(),
           content: "Concurrent Request B",
         }),
       }),

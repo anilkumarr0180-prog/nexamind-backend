@@ -8,6 +8,11 @@ type OllamaEmbedResponse = {
   embedding?: number[];
 };
 
+export interface OllamaGenerateEmbeddingOptions {
+  timeoutMs?: number | undefined;
+  signal?: AbortSignal | undefined;
+}
+
 export class OllamaEmbeddingProvider implements EmbeddingProvider {
   public readonly name = "ollama-embedding";
   public readonly dimensions: number;
@@ -27,13 +32,25 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     this.timeoutMs = timeoutMs ?? env.OLLAMA_TIMEOUT_MS;
   }
 
-  async generateEmbedding(text: string): Promise<number[]> {
+  async generateEmbedding(
+    text: string,
+    options?: OllamaGenerateEmbeddingOptions,
+  ): Promise<number[]> {
     const trimmed = text.trim();
     if (!trimmed) {
       throw new AppError("Cannot generate embedding for empty text", 400, "INVALID_INPUT");
     }
 
     const url = `${this.baseUrl}/api/embed`;
+    const effectiveTimeoutMs = options?.timeoutMs
+      ? Math.min(options.timeoutMs, this.timeoutMs)
+      : this.timeoutMs;
+
+    const signals: AbortSignal[] = [AbortSignal.timeout(effectiveTimeoutMs)];
+    if (options?.signal) {
+      signals.push(options.signal);
+    }
+    const signal: AbortSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]!;
 
     try {
       const response = await fetch(url, {
@@ -45,7 +62,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
           model: this.model,
           input: trimmed,
         }),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal,
       });
 
       if (!response.ok) {
@@ -85,6 +102,21 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
           "Embedding provider request timed out",
           504,
           "AI_PROVIDER_TIMEOUT",
+        );
+      }
+
+      const isUnavailable =
+        error instanceof Error &&
+        ((error as any).cause?.code === "ECONNREFUSED" ||
+          (error as any).cause?.code === "ENOTFOUND" ||
+          (error as any).cause?.code === "EHOSTUNREACH" ||
+          (error as any).code === "ECONNREFUSED");
+
+      if (isUnavailable) {
+        throw new AppError(
+          "Embedding provider service is unavailable",
+          503,
+          "AI_PROVIDER_UNAVAILABLE",
         );
       }
 

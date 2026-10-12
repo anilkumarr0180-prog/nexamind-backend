@@ -55,11 +55,13 @@ export interface BuildFullChatContextRagOptions {
   minSimilarity?: number | undefined;
   maxContextChars?: number | undefined;
   provider?: EmbeddingProvider | undefined;
+  timeoutMs?: number | undefined;
 }
 
 export interface BuildFullChatContextOptions {
   userId: string | Types.ObjectId;
   conversationId: string | Types.ObjectId;
+  conversation?: any | undefined;
   userQuery: string;
   maxMessages?: number | undefined;
   maxChars?: number | undefined;
@@ -153,10 +155,11 @@ export const buildFullChatContext = async (
   let conversationSummary: string | null = null;
   try {
     const activeConv =
-      await conversationRepository.findConversationByIdAndUserId(
+      options.conversation ??
+      (await conversationRepository.findConversationByIdAndUserId(
         options.conversationId,
         options.userId,
-      );
+      ));
     if (activeConv?.summary && activeConv.summary.trim().length > 0) {
       conversationSummary = activeConv.summary.trim();
     }
@@ -252,12 +255,15 @@ export const buildFullChatContext = async (
   let totalChunksSearched = 0;
   let ragChunks: RelevantDocumentChunk[] = [];
 
-  // Determine attachmentId candidate if not explicitly provided
+  // Determine attachmentId candidate if explicitly provided or on recent message
   let effectiveAttachmentId = options.attachmentId;
   if (!effectiveAttachmentId && recentMessages.length > 0) {
-    const latestMessageRecord = recentMessages[recentMessages.length - 1];
-    if (latestMessageRecord?.attachmentId) {
-      effectiveAttachmentId = latestMessageRecord.attachmentId;
+    for (let i = recentMessages.length - 1; i >= 0; i--) {
+      const msg = recentMessages[i];
+      if (msg?.attachmentId) {
+        effectiveAttachmentId = msg.attachmentId;
+        break;
+      }
     }
   }
 
@@ -271,6 +277,7 @@ export const buildFullChatContext = async (
         limit: ragLimit,
         minSimilarity: ragMinSimilarity,
         provider: options.ragOptions?.provider,
+        timeoutMs: options.ragOptions?.timeoutMs,
       });
       totalChunksSearched = searchResult.totalChunksSearched;
       ragChunks = searchResult.results;
@@ -299,12 +306,31 @@ export const buildFullChatContext = async (
     }
   } else {
     options.onSourcesRetrieved?.([]);
-    // Fall back to direct document attachment (e.g. unindexed documents / Step 9 compatibility)
+    // Fall back to direct document attachment (e.g. unindexed documents / Step 9 compatibility / retrieval failure)
     let docContext = options.documentContext;
-    if (!docContext && effectiveAttachmentId) {
+    let fallbackAttachmentId = effectiveAttachmentId;
+    if (!docContext && !fallbackAttachmentId && options.conversationId) {
+      try {
+        const convAtts = await attachmentRepository.findAttachmentsByConversationId(
+          options.conversationId,
+          options.userId,
+        );
+        const readyDoc = convAtts.find(
+          (a) =>
+            a.type === ATTACHMENT_TYPES.DOCUMENT &&
+            a.status === ATTACHMENT_STATUSES.READY &&
+            a.extractedText,
+        );
+        if (readyDoc) {
+          fallbackAttachmentId = readyDoc._id.toString();
+        }
+      } catch {}
+    }
+
+    if (!docContext && fallbackAttachmentId) {
       try {
         const att = await attachmentRepository.findAttachmentByIdAndUserId(
-          effectiveAttachmentId,
+          fallbackAttachmentId,
           options.userId,
         );
         if (

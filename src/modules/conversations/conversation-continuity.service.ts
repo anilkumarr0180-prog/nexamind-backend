@@ -176,47 +176,8 @@ export const getContinuityContextForUser = async (
     return null;
   }
 
-  // On-demand summarization fallback: if the user has previous conversations with completed messages
-  // that were not yet summarized (e.g. legacy or short 2-5 message conversations), summarize the most recent one.
-  if (!summarizedConversations || summarizedConversations.length === 0) {
-    try {
-      const { Conversation } = await import("./conversation.model.js");
-      const { summarizeConversation } = await import("./conversation-summary.service.js");
-      const unsummarizedCandidate = await Conversation.findOne({
-        userId,
-        deletedAt: null,
-        messageCount: { $gte: 2 },
-        ...(currentConversationId ? { _id: { $ne: currentConversationId } } : {}),
-      }).sort({ updatedAt: -1 });
-
-      if (unsummarizedCandidate) {
-        const summary = await summarizeConversation(
-          unsummarizedCandidate._id,
-          userId,
-          customProvider,
-        );
-        if (summary) {
-          summarizedConversations = [
-            {
-              _id: unsummarizedCandidate._id,
-              userId: unsummarizedCandidate.userId,
-              title: unsummarizedCandidate.title,
-              summary,
-              summaryUpdatedAt: new Date(),
-              updatedAt: unsummarizedCandidate.updatedAt,
-              deletedAt: null,
-            } as any,
-          ];
-        }
-      }
-    } catch (fallbackErr) {
-      console.warn(
-        "Non-fatal error in on-demand summarization fallback for continuity:",
-        fallbackErr,
-      );
-    }
-  }
-
+  // Hot path optimization: Synchronous LLM summarization removed from context-building hot path.
+  // Reuses existing persisted summaries from candidate retrieval with fail-open behavior.
   if (!summarizedConversations || summarizedConversations.length === 0) {
     return null;
   }

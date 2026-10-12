@@ -26,11 +26,14 @@ export type UpdateConversationData = {
   status?: ConversationStatus;
   lastMessageAt?: Date | null;
   messageCount?: number;
+  messageCountIncrement?: number;
   deletedAt?: Date | null;
   summary?: string | null;
   summaryUpdatedAt?: Date | null;
   lastSummarizedMessageCount?: number;
   activeLeafMessageId?: string | Types.ObjectId | null;
+  $inc?: Record<string, number>;
+  $set?: Record<string, unknown>;
 };
 
 export const createConversation = async (data: CreateConversationData) => {
@@ -100,13 +103,40 @@ export const updateConversation = async (
   userId: string | Types.ObjectId,
   data: UpdateConversationData,
 ) => {
+  const updateQuery: Record<string, unknown> = {};
+
+  if (data.$inc || data.messageCountIncrement !== undefined) {
+    const incObj: Record<string, number> = { ...(data.$inc || {}) };
+    if (data.messageCountIncrement !== undefined) {
+      incObj.messageCount = data.messageCountIncrement;
+    }
+    updateQuery.$inc = incObj;
+
+    const setObj: Record<string, unknown> = { ...(data.$set || {}) };
+    for (const [key, value] of Object.entries(data)) {
+      if (
+        key !== "$inc" &&
+        key !== "$set" &&
+        key !== "messageCountIncrement" &&
+        value !== undefined
+      ) {
+        setObj[key] = value;
+      }
+    }
+    if (Object.keys(setObj).length > 0) {
+      updateQuery.$set = setObj;
+    }
+  } else {
+    Object.assign(updateQuery, data);
+  }
+
   return Conversation.findOneAndUpdate(
     {
       _id: conversationId,
       userId,
       deletedAt: null,
     },
-    data,
+    updateQuery,
     { returnDocument: "after" },
   );
 };

@@ -165,6 +165,20 @@ export const envSchema = z
       .positive()
       .default(50),
 
+    VOICE_RATE_LIMIT_WINDOW_MS: z
+      .coerce
+      .number()
+      .int()
+      .positive()
+      .default(60 * 1000),
+
+    VOICE_RATE_LIMIT_MAX: z
+      .coerce
+      .number()
+      .int()
+      .positive()
+      .default(20),
+
     // Polar Billing Provider
     POLAR_ACCESS_TOKEN: z
       .string()

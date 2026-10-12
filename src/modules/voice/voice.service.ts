@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { AppError } from "../../errors/app.error.js";
 import { env } from "../../config/env.js";
@@ -88,6 +89,35 @@ export function isSilenceHallucination(text: string): boolean {
   return false;
 }
 
+export const MAX_TRANSCRIPTION_RETRIES = 2;
+export const INITIAL_RETRY_DELAY_MS = 200;
+
+export function isTransientError(status: number): boolean {
+  return status === 500 || status === 502 || status === 503 || status === 504 || status === 429;
+}
+
+export async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    throw new AppError("Transcription was cancelled", 499, "REQUEST_CANCELLED");
+  }
+  return new Promise<void>((resolve, reject) => {
+    let timer: NodeJS.Timeout | null = null;
+    const onAbort = () => {
+      if (timer) clearTimeout(timer);
+      reject(new AppError("Transcription was cancelled", 499, "REQUEST_CANCELLED"));
+    };
+    timer = setTimeout(() => {
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      resolve();
+    }, ms);
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
+
 export class VoiceService {
   constructor(private readonly apiKey?: string) {}
 
@@ -104,16 +134,36 @@ export class VoiceService {
   }
 
   async transcribeAudio(
-    audioBuffer: Buffer,
+    audioInput: Buffer | string,
     filename: string = "audio.webm",
     mimetype: string = "audio/webm",
     options?: TranscribeAudioOptions,
   ): Promise<TranscriptionResult> {
-    if (!audioBuffer || audioBuffer.length === 0) {
+    if (!audioInput) {
       throw new AppError("Audio data cannot be empty", 400, "INVALID_AUDIO");
     }
 
-    if (audioBuffer.length < 100) {
+    const isFilePath = typeof audioInput === "string";
+    let audioSize = 0;
+
+    if (isFilePath) {
+      try {
+        const stat = await fs.promises.stat(audioInput);
+        audioSize = stat.size;
+      } catch {
+        throw new AppError("Audio data cannot be empty", 400, "INVALID_AUDIO");
+      }
+    } else if (Buffer.isBuffer(audioInput)) {
+      audioSize = audioInput.length;
+    } else {
+      throw new AppError("Audio data cannot be empty", 400, "INVALID_AUDIO");
+    }
+
+    if (audioSize === 0) {
+      throw new AppError("Audio data cannot be empty", 400, "INVALID_AUDIO");
+    }
+
+    if (audioSize < 100) {
       throw new AppError(
         "Audio recording is too short or empty. Please speak into the microphone.",
         400,
@@ -125,12 +175,19 @@ export class VoiceService {
     const normalized = normalizeAudioFilenameAndMime(filename, mimetype);
     const timeoutMs = options?.timeoutMs || DEFAULT_TRANSCRIPTION_TIMEOUT_MS;
 
-    
     const executeGroqRequest = async (modelToUse: string): Promise<Response> => {
       const formData = new FormData();
-      const file = new File([new Uint8Array(audioBuffer)], normalized.filename, {
-        type: normalized.mimetype,
-      });
+      let file: File;
+      if (isFilePath) {
+        const blob = await fs.openAsBlob(audioInput, { type: normalized.mimetype });
+        file = new File([blob], normalized.filename, {
+          type: normalized.mimetype,
+        });
+      } else {
+        file = new File([new Uint8Array(audioInput)], normalized.filename, {
+          type: normalized.mimetype,
+        });
+      }
       formData.append("file", file);
       formData.append("model", modelToUse);
       formData.append("response_format", "json");
@@ -198,19 +255,99 @@ export class VoiceService {
     };
 
     let model = options?.model || DEFAULT_WHISPER_MODEL;
-    let response = await executeGroqRequest(model);
+    let response: Response | null = null;
+    let lastError: Error | null = null;
 
-    // Fallback to FALLBACK_WHISPER_MODEL if turbo model suffers temporary 500, 502, or 503
-    if (!response.ok && (response.status === 500 || response.status === 502 || response.status === 503) && model === DEFAULT_WHISPER_MODEL) {
-            try {
-        const fallbackRes = await executeGroqRequest(FALLBACK_WHISPER_MODEL);
-        if (fallbackRes.ok) {
-          response = fallbackRes;
-          model = FALLBACK_WHISPER_MODEL;
-        }
-      } catch {
-        // Fallback attempt failed, continue to process primary response error
+    for (let attempt = 0; attempt <= MAX_TRANSCRIPTION_RETRIES; attempt++) {
+      if (options?.signal?.aborted) {
+        throw new AppError("Transcription was cancelled", 499, "REQUEST_CANCELLED");
       }
+
+      const isRetry = attempt > 0;
+      const modelToUse =
+        isRetry && model === DEFAULT_WHISPER_MODEL
+          ? FALLBACK_WHISPER_MODEL
+          : model;
+
+      try {
+        response = await executeGroqRequest(modelToUse);
+
+        if (response.ok) {
+          model = modelToUse;
+          break; // Successful response
+        }
+
+        const status = response.status;
+
+        // Permanent client/auth errors: do NOT retry
+        if (
+          status === 400 ||
+          status === 401 ||
+          status === 403 ||
+          status === 404 ||
+          status === 413 ||
+          status === 422
+        ) {
+          break;
+        }
+
+        // Transient errors: bounded retry with backoff
+        if (isTransientError(status) && attempt < MAX_TRANSCRIPTION_RETRIES) {
+          if (options?.signal?.aborted) {
+            throw new AppError("Transcription was cancelled", 499, "REQUEST_CANCELLED");
+          }
+
+          let delayMs = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+          const retryAfterHeader = response.headers.get("retry-after");
+          if (status === 429 && retryAfterHeader) {
+            const parsedSeconds = parseFloat(retryAfterHeader);
+            if (!Number.isNaN(parsedSeconds) && parsedSeconds > 0) {
+              delayMs = Math.min(parsedSeconds * 1000, 2000);
+            }
+          }
+          delayMs = Math.min(delayMs, 1500);
+
+          await sleepWithSignal(delayMs, options?.signal);
+          continue;
+        }
+
+        // Retries exhausted or non-transient error
+        break;
+      } catch (err: unknown) {
+        lastError = err as Error;
+
+        // Never retry after client cancellation
+        if (
+          options?.signal?.aborted ||
+          (err instanceof AppError && err.code === "REQUEST_CANCELLED") ||
+          (err as Error)?.message === "CLIENT_ABORTED"
+        ) {
+          throw new AppError("Transcription was cancelled", 499, "REQUEST_CANCELLED");
+        }
+
+        // Transient network error: retry if attempts remain
+        if (
+          err instanceof AppError &&
+          err.code === "VOICE_PROVIDER_NETWORK_ERROR" &&
+          attempt < MAX_TRANSCRIPTION_RETRIES
+        ) {
+          const delayMs = Math.min(INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt), 1500);
+          await sleepWithSignal(delayMs, options?.signal);
+          continue;
+        }
+
+        // Timeout or non-retryable error
+        throw err;
+      }
+    }
+
+    if (!response) {
+      if (lastError) throw lastError;
+      throw new AppError(
+        "Speech-to-text service unavailable",
+        502,
+        "VOICE_PROVIDER_ERROR",
+      );
     }
 
     const rawResponseText = await response.text();
@@ -236,6 +373,13 @@ export class VoiceService {
       if (response.status === 429) {
         throw new AppError("Speech-to-text rate limit exceeded. Please try again shortly.", 429, "RATE_LIMIT_EXCEEDED");
       }
+      if (response.status === 504) {
+        throw new AppError(
+          "Speech-to-text service timed out. Please try again with a shorter recording.",
+          504,
+          "VOICE_PROVIDER_TIMEOUT",
+        );
+      }
 
       throw new AppError(errMsg, 502, "VOICE_PROVIDER_ERROR");
     }
@@ -249,9 +393,8 @@ export class VoiceService {
     let text = rawText.trim();
     const hallucinationDetected = isSilenceHallucination(text);
     if (hallucinationDetected) {
-            text = "";
-    } else {
-          }
+      text = "";
+    }
 
     return {
       text,

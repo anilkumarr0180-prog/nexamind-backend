@@ -1,3 +1,6 @@
+import os from "node:os";
+import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import multer from "multer";
 import path from "node:path";
 import type { Request, Response, NextFunction } from "express";
@@ -245,10 +248,30 @@ export const ALLOWED_AUDIO_EXTENSIONS = [
   ".oga",
 ] as const;
 
-export const MAX_AUDIO_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+export const MAX_AUDIO_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+const audioUploadDir = path.join(os.tmpdir(), "nexamind-audio-uploads");
+if (!fs.existsSync(audioUploadDir)) {
+  fs.mkdirSync(audioUploadDir, { recursive: true });
+}
+
+export const getAudioUploadDir = (): string => audioUploadDir;
+
+const audioDiskStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, audioUploadDir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const safeExt = (ALLOWED_AUDIO_EXTENSIONS as readonly string[]).includes(ext as any)
+      ? ext
+      : ".webm";
+    cb(null, `voice_${randomUUID()}_${Date.now()}${safeExt}`);
+  },
+});
 
 const multerAudioUpload = multer({
-  storage,
+  storage: audioDiskStorage,
   limits: {
     fileSize: MAX_AUDIO_FILE_SIZE,
     files: 1,
@@ -280,14 +303,32 @@ const multerAudioUpload = multer({
 /**
  * Middleware for parsing multipart/form-data with exactly one audio file.
  * Normalizes files from field names "file" or "audio" and validates constraints strictly.
+ * Backed by temporary disk storage to prevent V8 heap buffer bloat.
  */
 export const uploadSingleAudio = (
   req: Request,
   res: Response,
   next: NextFunction,
 ): void => {
+  const cleanupUploadedAudioFiles = (
+    filesList?: Express.Multer.File[] | Express.Multer.File
+  ) => {
+    if (!filesList) return;
+    const arr = Array.isArray(filesList) ? filesList : [filesList];
+    for (const f of arr) {
+      if (f.path) {
+        fs.promises.unlink(f.path).catch(() => {});
+      }
+    }
+  };
+
+  req.on("aborted", () => {
+    cleanupUploadedAudioFiles(req.files as Express.Multer.File[]);
+  });
+
   multerAudioUpload.any()(req, res, (err) => {
     if (err) {
+      cleanupUploadedAudioFiles(req.files as Express.Multer.File[]);
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
           return next(
@@ -331,6 +372,7 @@ export const uploadSingleAudio = (
     }
 
     if (files.length > 1) {
+      cleanupUploadedAudioFiles(files);
       return next(
         new AppError(
           "Only exactly one audio file is allowed",
@@ -342,6 +384,7 @@ export const uploadSingleAudio = (
 
     const singleFile = files[0]!;
     if (singleFile.fieldname !== "file" && singleFile.fieldname !== "audio") {
+      cleanupUploadedAudioFiles(singleFile);
       return next(
         new AppError(
           "Audio file must be provided in field 'file' or 'audio'",

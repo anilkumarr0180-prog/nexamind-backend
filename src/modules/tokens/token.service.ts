@@ -217,28 +217,31 @@ export const deductCredits = async (
     );
   }
 
+  const cleanReferenceId = referenceId?.trim() || null;
+
+  // Idempotency pre-check: if referenceId provided, check if already recorded
+  if (cleanReferenceId) {
+    const existingTx =
+      await creditTransactionRepository.findCreditTransactionByReferenceIdAndType(
+        cleanReferenceId,
+        "USAGE",
+      );
+
+    if (existingTx && existingTx.userId.toString() === userId) {
+      return {
+        balance: existingTx.balanceAfter,
+        updatedAt: existingTx.createdAt,
+      };
+    }
+  }
+
   const session = await mongoose.startSession();
 
   try {
     let result: TokenBalanceResult | null = null;
 
     await session.withTransaction(async () => {
-      const currentBalance =
-        await tokenRepository.findTokenBalanceByUserId(
-          userId,
-          session,
-        );
-
-      if (!currentBalance) {
-        throw new AppError(
-          "Token balance not found for user",
-          404,
-          "TOKEN_BALANCE_NOT_FOUND",
-        );
-      }
-
-      const balanceBefore = currentBalance.balance;
-
+      // Hot path optimization: Execute conditional atomic update directly without preliminary read
       const updated =
         await tokenRepository.atomicDeductBalanceWithSession(
           new Types.ObjectId(userId),
@@ -247,6 +250,21 @@ export const deductCredits = async (
         );
 
       if (!updated) {
+        // Distinguish between insufficient balance (402) and user balance not found (404)
+        const currentBalance =
+          await tokenRepository.findTokenBalanceByUserId(
+            userId,
+            session,
+          );
+
+        if (!currentBalance) {
+          throw new AppError(
+            "Token balance not found for user",
+            404,
+            "TOKEN_BALANCE_NOT_FOUND",
+          );
+        }
+
         throw new AppError(
           "Insufficient credit balance",
           402,
@@ -255,6 +273,7 @@ export const deductCredits = async (
       }
 
       const balanceAfter = updated.balance;
+      const balanceBefore = balanceAfter + amount;
 
       await creditTransactionRepository.createCreditTransaction(
         {
@@ -263,7 +282,7 @@ export const deductCredits = async (
           amount,
           balanceBefore,
           balanceAfter,
-          referenceId: referenceId ?? null,
+          referenceId: cleanReferenceId,
           description: "AI usage",
         },
         session,
@@ -284,6 +303,31 @@ export const deductCredits = async (
     }
 
     return result;
+  } catch (error: unknown) {
+    // Under concurrent race conditions with identical referenceId, unique partial index throws code 11000.
+    // Verify that the transaction was indeed completed by the concurrent winning request.
+    if (
+      cleanReferenceId &&
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error as { code: unknown }).code === 11000
+    ) {
+      const existingTx =
+        await creditTransactionRepository.findCreditTransactionByReferenceIdAndType(
+          cleanReferenceId,
+          "USAGE",
+        );
+
+      if (existingTx && existingTx.userId.toString() === userId) {
+        return {
+          balance: existingTx.balanceAfter,
+          updatedAt: existingTx.createdAt,
+        };
+      }
+    }
+
+    throw error;
   } finally {
     await session.endSession();
   }
@@ -315,28 +359,31 @@ export const refundCredits = async (
     );
   }
 
+  const cleanReferenceId = referenceId?.trim() || null;
+
+  // Idempotency pre-check: if referenceId provided, check if already recorded
+  if (cleanReferenceId) {
+    const existingTx =
+      await creditTransactionRepository.findCreditTransactionByReferenceIdAndType(
+        cleanReferenceId,
+        "REFUND",
+      );
+
+    if (existingTx && existingTx.userId.toString() === userId) {
+      return {
+        balance: existingTx.balanceAfter,
+        updatedAt: existingTx.createdAt,
+      };
+    }
+  }
+
   const session = await mongoose.startSession();
 
   try {
     let result: TokenBalanceResult | null = null;
 
     await session.withTransaction(async () => {
-      const currentBalance =
-        await tokenRepository.findTokenBalanceByUserId(
-          userId,
-          session,
-        );
-
-      if (!currentBalance) {
-        throw new AppError(
-          "Token balance not found for user",
-          404,
-          "TOKEN_BALANCE_NOT_FOUND",
-        );
-      }
-
-      const balanceBefore = currentBalance.balance;
-
+      // Hot path optimization: Execute conditional atomic update directly without preliminary read
       const updated =
         await tokenRepository.atomicAddBalanceWithSession(
           new Types.ObjectId(userId),
@@ -353,6 +400,7 @@ export const refundCredits = async (
       }
 
       const balanceAfter = updated.balance;
+      const balanceBefore = balanceAfter - amount;
 
       await creditTransactionRepository.createCreditTransaction(
         {
@@ -361,7 +409,7 @@ export const refundCredits = async (
           amount,
           balanceBefore,
           balanceAfter,
-          referenceId: referenceId ?? null,
+          referenceId: cleanReferenceId,
           description: "Credit refund",
         },
         session,
@@ -382,6 +430,31 @@ export const refundCredits = async (
     }
 
     return result;
+  } catch (error: unknown) {
+    // Under concurrent race conditions with identical referenceId, unique partial index throws code 11000.
+    // Verify that the refund transaction was indeed completed by the concurrent winning request.
+    if (
+      cleanReferenceId &&
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error as { code: unknown }).code === 11000
+    ) {
+      const existingTx =
+        await creditTransactionRepository.findCreditTransactionByReferenceIdAndType(
+          cleanReferenceId,
+          "REFUND",
+        );
+
+      if (existingTx && existingTx.userId.toString() === userId) {
+        return {
+          balance: existingTx.balanceAfter,
+          updatedAt: existingTx.createdAt,
+        };
+      }
+    }
+
+    throw error;
   } finally {
     await session.endSession();
   }

@@ -1,5 +1,7 @@
 import { Types } from "mongoose";
 import { AppError } from "../../errors/app.error.js";
+import { env } from "../../config/env.js";
+import { OllamaEmbeddingProvider } from "../ai/providers/ollama-embedding.provider.js";
 import { findConversationById } from "../conversations/conversation.repository.js";
 import { Attachment } from "./attachment.model.js";
 import {
@@ -21,6 +23,7 @@ import type { EmbeddingProvider } from "../ai/providers/embedding-provider.inter
 
 export const DEFAULT_DOCUMENT_SEARCH_LIMIT = DEFAULT_RAG_TOP_K;
 export const DEFAULT_DOCUMENT_SIMILARITY_THRESHOLD = DEFAULT_RAG_SIMILARITY_THRESHOLD;
+export const DEFAULT_RAG_QUERY_EMBEDDING_TIMEOUT_MS = 2000;
 
 export interface SemanticDocumentSearchInput {
   userId: string | Types.ObjectId;
@@ -31,6 +34,7 @@ export interface SemanticDocumentSearchInput {
   limit?: number | undefined;
   minSimilarity?: number | undefined;
   provider?: EmbeddingProvider | undefined;
+  timeoutMs?: number | undefined;
 }
 
 export interface RelevantDocumentChunk {
@@ -48,6 +52,108 @@ export interface DocumentSearchResult {
   totalChunksSearched: number;
   results: RelevantDocumentChunk[];
 }
+
+
+/**
+ * Detects if the given provider is a local Ollama embedding provider.
+ */
+export const isLocalOllamaProvider = (provider: EmbeddingProvider): boolean => {
+  return (
+    provider instanceof OllamaEmbeddingProvider ||
+    provider.name === "ollama-embedding"
+  );
+};
+
+/**
+ * Detects if the embedding provider is incompatible with the deployed environment.
+ * E.g., when NexaMind is configured for cloud Groq provider or deployed in production with local Ollama.
+ */
+export const isEmbeddingProviderIncompatible = (
+  provider: EmbeddingProvider,
+): boolean => {
+  if (isLocalOllamaProvider(provider)) {
+    const isProduction = env.NODE_ENV === "production";
+    if (env.AI_PROVIDER === "groq" || isProduction) {
+      return true;
+    }
+  }
+  return false;
+};
+
+// Circuit breaker for local embedding provider availability
+let lastProviderFailureTimestamp = 0;
+const PROVIDER_UNAVAILABLE_COOLDOWN_MS = 15000; // 15 seconds cooldown
+
+export const isEmbeddingProviderUnavailable = (
+  provider: EmbeddingProvider,
+): boolean => {
+  if (isLocalOllamaProvider(provider) && lastProviderFailureTimestamp > 0) {
+    if (Date.now() - lastProviderFailureTimestamp < PROVIDER_UNAVAILABLE_COOLDOWN_MS) {
+      return true;
+    }
+  }
+  return false;
+};
+
+export const recordEmbeddingProviderFailure = (provider: EmbeddingProvider): void => {
+  if (isLocalOllamaProvider(provider)) {
+    lastProviderFailureTimestamp = Date.now();
+  }
+};
+
+export const resetEmbeddingProviderAvailability = (): void => {
+  lastProviderFailureTimestamp = 0;
+};
+
+/**
+ * Generates query embedding with bounded timeout and fail-fast compatibility/circuit-breaker checks.
+ */
+export const generateQueryEmbeddingWithTimeout = async (
+  provider: EmbeddingProvider,
+  text: string,
+  timeoutMs: number = DEFAULT_RAG_QUERY_EMBEDDING_TIMEOUT_MS,
+): Promise<number[]> => {
+  if (isEmbeddingProviderIncompatible(provider)) {
+    throw new AppError(
+      "Embedding provider is incompatible with the deployed environment",
+      503,
+      "EMBEDDING_PROVIDER_UNAVAILABLE",
+    );
+  }
+
+  if (isEmbeddingProviderUnavailable(provider)) {
+    throw new AppError(
+      "Embedding provider is currently unavailable (circuit open)",
+      503,
+      "EMBEDDING_PROVIDER_UNAVAILABLE",
+    );
+  }
+
+  let timer: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new AppError(
+          `Query embedding generation timed out after ${timeoutMs}ms`,
+          504,
+          "AI_PROVIDER_TIMEOUT",
+        ),
+      );
+    }, timeoutMs);
+  });
+
+  try {
+    const generatePromise = (provider as any).generateEmbedding(text, { timeoutMs });
+    const vector = await Promise.race([generatePromise, timeoutPromise]);
+    resetEmbeddingProviderAvailability();
+    return vector;
+  } catch (error: unknown) {
+    recordEmbeddingProviderFailure(provider);
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
 
 /**
  * Calculates standard cosine similarity between two numeric vectors.
@@ -263,9 +369,14 @@ export const semanticDocumentSearch = async (
     };
   }
 
-  // Generate query embedding using existing embedding provider
+  // Generate query embedding using existing embedding provider with bounded timeout
   const provider = input.provider ?? getDefaultEmbeddingProvider();
-  const queryVector = await provider.generateEmbedding(trimmedQuery);
+  const timeoutMs = input.timeoutMs ?? DEFAULT_RAG_QUERY_EMBEDDING_TIMEOUT_MS;
+  const queryVector = await generateQueryEmbeddingWithTimeout(
+    provider,
+    trimmedQuery,
+    timeoutMs,
+  );
   validateEmbeddingVector(queryVector, provider.dimensions);
 
   const minSimilarity =

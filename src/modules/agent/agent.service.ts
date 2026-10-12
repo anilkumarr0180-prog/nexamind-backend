@@ -221,6 +221,7 @@ export class AgentService {
         const fullChatContext = await buildFullChatContext({
           userId,
           conversationId: conversation._id,
+          conversation,
           userQuery: task,
           maxMessages: env.AI_MAX_CONTEXT_MESSAGES,
           maxChars: env.AI_MAX_CONTEXT_CHARS,
@@ -286,13 +287,12 @@ export class AgentService {
           sources: (result.sources && result.sources.length > 0) ? (result.sources as any) : null,
         });
 
-        const totalMessages = (activeConversation.messageCount || 0) + 2;
         await conversationRepository.updateConversation(
           activeConversation._id,
           userId,
           {
             lastMessageAt: assistantMsg.createdAt ?? new Date(),
-            messageCount: totalMessages,
+            messageCountIncrement: 2,
           },
         );
 

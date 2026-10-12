@@ -95,6 +95,53 @@ export const isSafeMemoryContent = (content: string): boolean => {
   return true;
 };
 
+const TRIVIAL_PHRASES = new Set([
+  "hi", "hello", "hey", "heya", "howdy", "yo", "sup", "greetings",
+  "good morning", "good afternoon", "good evening", "good night",
+  "how are you", "how are you doing", "hows it going", "how is it going", "whats up", "what is up",
+  "ok", "okay", "k", "kk", "sure", "fine", "alright", "all right",
+  "yes", "yeah", "yep", "yup", "aye",
+  "no", "nope", "nah",
+  "thanks", "thank you", "thx", "ty", "thank you so much", "thanks a lot", "many thanks",
+  "got it", "understood", "sounds good", "makes sense", "will do", "noted",
+  "cool", "great", "awesome", "perfect", "nice", "sweet", "neat",
+  "bye", "goodbye", "see you", "see ya", "cya", "farewell", "cheers",
+  "ping", "pong", "test", "testing", "hello world",
+  "help", "status",
+]);
+
+const FILLER_WORDS = new Set([
+  "there", "assistant", "bot", "ai", "mate", "dude", "bro", "man", "sir", "again", "now", "so", "much", "lot", "very", "for", "it", "got"
+]);
+
+for (const phrase of TRIVIAL_PHRASES) {
+  for (const word of phrase.split(" ")) {
+    FILLER_WORDS.add(word);
+  }
+}
+
+export const isTrivialMessage = (content: string): boolean => {
+  if (!content) return true;
+  const trimmed = content.trim();
+  if (trimmed.length === 0) return true;
+
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (normalized.length <= 2) return true;
+  if (TRIVIAL_PHRASES.has(normalized)) return true;
+
+  const words = normalized.split(" ");
+  if (words.length <= 3) {
+    const allFiller = words.every((w) => FILLER_WORDS.has(w));
+    if (allFiller) return true;
+  }
+  return false;
+};
+
 export type MemoryExtractionInput = {
   userMessageContent: string;
   assistantMessageContent?: string | undefined;
@@ -111,6 +158,11 @@ export const extractAndSaveMemories = async (
   input: MemoryExtractionInput,
   provider: AIProvider,
 ): Promise<ExtractedMemoryResult> => {
+  // Fast path: skip unnecessary LLM extraction call for trivial messages
+  if (isTrivialMessage(input.userMessageContent)) {
+    return { success: true, extractedCount: 0, memories: [] };
+  }
+
   try {
     const userPrompt = `User Message: ${input.userMessageContent.slice(0, 2000)}${
       input.assistantMessageContent

@@ -25,6 +25,11 @@ export const chatRequestSchema = z.object({
         .regex(objectIdRegex, "Invalid attachment ID")
         .nullable()
         .optional(),
+      idempotencyKey: z
+        .string()
+        .trim()
+        .max(128, "Idempotency key cannot exceed 128 characters")
+        .optional(),
     })
     .strict(),
 });
