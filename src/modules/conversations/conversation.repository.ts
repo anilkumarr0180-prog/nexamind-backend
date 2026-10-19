@@ -153,6 +153,12 @@ export const softDeleteConversation = async (
     },
     {
       deletedAt: new Date(),
+      summary: null,
+      summaryUpdatedAt: null,
+      activeLeafMessageId: null,
+      messageCount: 0,
+      lastMessageAt: null,
+      lastSummarizedMessageCount: 0,
     },
     { returnDocument: "after" },
   );

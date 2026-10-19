@@ -58,6 +58,45 @@ export const envSchema = z
       )
       .default("15m"),
 
+    ROTATION_ENCRYPTION_KEY: z
+      .string()
+      .trim()
+      .optional()
+      .refine(
+        (val) => !val || val.length === 0 || /^[0-9a-fA-F]{64}$/.test(val),
+        {
+          message:
+            "ROTATION_ENCRYPTION_KEY must be a 64-character hexadecimal string representing a 256-bit key",
+        },
+      )
+      .transform((val) => (val && val.length > 0 ? val : undefined)),
+
+    JWT_REFRESH_EXPIRES_IN: z
+      .string()
+      .trim()
+      .regex(
+        /^\d+(s|m|h|d|w|y)$/,
+        "JWT_REFRESH_EXPIRES_IN must use a valid duration such as 30d, 7d, or 24h",
+      )
+      .default("30d"),
+
+    AUTH_RENEWAL_ENABLED: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((val) => val === "true"),
+
+    VSCODE_ALLOWED_CALLBACK_URIS: z
+      .string()
+      .default(
+        "vscode://nexamind.nexamind-vscode/auth,vscode://nexamind.nexamind-vscode/callback,vscode-insiders://nexamind.nexamind-vscode/auth,vscode-insiders://nexamind.nexamind-vscode/callback",
+      )
+      .transform((val) =>
+        val
+          .split(",")
+          .map((uri) => uri.trim().replace(/\/+$/, ""))
+          .filter((uri) => uri.length > 0),
+      ),
+
     AI_PROVIDER: z
       .enum(["ollama", "groq"])
       .default("ollama"),
@@ -265,6 +304,30 @@ export const envSchema = z
         code: z.ZodIssueCode.custom,
         message: "GROQ_API_KEY is required when AI_PROVIDER is set to groq",
         path: ["GROQ_API_KEY"],
+      });
+    }
+
+    if (
+      data.AUTH_RENEWAL_ENABLED &&
+      (!data.ROTATION_ENCRYPTION_KEY ||
+        data.ROTATION_ENCRYPTION_KEY.trim().length === 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "ROTATION_ENCRYPTION_KEY is required when AUTH_RENEWAL_ENABLED is true",
+        path: ["ROTATION_ENCRYPTION_KEY"],
+      });
+    }
+
+    if (
+      data.ROTATION_ENCRYPTION_KEY &&
+      data.ROTATION_ENCRYPTION_KEY === data.JWT_SECRET
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "ROTATION_ENCRYPTION_KEY must be a distinct secret, separate from JWT_SECRET",
+        path: ["ROTATION_ENCRYPTION_KEY"],
       });
     }
   });

@@ -231,11 +231,20 @@ export const deleteFileFromCloudinary = async (
   resourceType: "image" | "raw" | "auto" = "image",
 ): Promise<{ result: string }> => {
   try {
-    const result = await cloudinary.uploader.destroy(publicId, {
+    const result = (await cloudinary.uploader.destroy(publicId, {
       resource_type: resourceType,
-    });
-    return result as { result: string };
+    })) as { result: string };
+
+    if (!result || (result.result !== "ok" && result.result !== "not found")) {
+      const detail = result ? JSON.stringify(result) : "empty response";
+      throw new Error(`Unsuccessful Cloudinary response: ${detail}`);
+    }
+
+    return result;
   } catch (error: unknown) {
+    if (error instanceof AppError) {
+      throw error;
+    }
     const message =
       error instanceof Error ? error.message : "Cloudinary deletion failed";
     throw new AppError(
@@ -254,11 +263,20 @@ export const deleteImageFromCloudinary = async (
   resourceType: "image" | "raw" | "auto" = "image",
 ): Promise<{ result: string }> => {
   try {
-    const result = await cloudinary.uploader.destroy(publicId, {
+    const result = (await cloudinary.uploader.destroy(publicId, {
       resource_type: resourceType,
-    });
-    return result as { result: string };
+    })) as { result: string };
+
+    if (!result || (result.result !== "ok" && result.result !== "not found")) {
+      const detail = result ? JSON.stringify(result) : "empty response";
+      throw new Error(`Unsuccessful Cloudinary response: ${detail}`);
+    }
+
+    return result;
   } catch (error: unknown) {
+    if (error instanceof AppError) {
+      throw error;
+    }
     const message =
       error instanceof Error ? error.message : "Cloudinary deletion failed";
     throw new AppError(
