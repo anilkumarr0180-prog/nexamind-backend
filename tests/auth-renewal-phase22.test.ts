@@ -28,7 +28,7 @@ const runTests = async () => {
 
   const allowedBrowserOrigin = env.CORS_ORIGINS[0] || "http://localhost:5173";
   const untrustedOrigin = "https://malicious-attacker.com";
-  const allowedVsCodeCallbackUri = env.VSCODE_ALLOWED_CALLBACK_URIS[0] || "vscode://nexamind.nexamind-vscode/auth";
+  const allowedVsCodeCallbackUri = env.VSCODE_ALLOWED_CALLBACK_URIS[0] || "vscode://nexamind.nexamind-ai-code-assistant/auth";
 
   try {
     // -------------------------------------------------------------

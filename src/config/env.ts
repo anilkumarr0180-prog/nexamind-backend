@@ -88,7 +88,7 @@ export const envSchema = z
     VSCODE_ALLOWED_CALLBACK_URIS: z
       .string()
       .default(
-        "vscode://nexamind.nexamind-vscode/auth,vscode://nexamind.nexamind-vscode/callback,vscode-insiders://nexamind.nexamind-vscode/auth,vscode-insiders://nexamind.nexamind-vscode/callback",
+        "vscode://nexamind.nexamind-ai-code-assistant/auth,vscode://nexamind.nexamind-ai-code-assistant/callback,vscode-insiders://nexamind.nexamind-ai-code-assistant/auth,vscode-insiders://nexamind.nexamind-ai-code-assistant/callback,vscode://nexamind.nexamind-vscode/auth,vscode://nexamind.nexamind-vscode/callback,vscode-insiders://nexamind.nexamind-vscode/auth,vscode-insiders://nexamind.nexamind-vscode/callback",
       )
       .transform((val) =>
         val
