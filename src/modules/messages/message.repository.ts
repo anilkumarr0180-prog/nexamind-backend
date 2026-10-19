@@ -168,3 +168,13 @@ export const findRecentMessagesForContext = async (
   return findActiveBranchMessages(conversationId, leafMessageId, limit);
 };
 
+export const deleteMessagesByConversationId = async (
+  conversationId: string | Types.ObjectId,
+  userId: string | Types.ObjectId,
+) => {
+  return Message.deleteMany({
+    conversationId,
+    userId,
+  });
+};
+

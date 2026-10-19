@@ -2,6 +2,7 @@ import { deleteConversationAttachments } from "../attachments/attachment.service
 import { AppError } from "../../errors/app.error.js";
 import { CONVERSATION_STATUSES } from "./conversation.model.js";
 import * as conversationRepository from "./conversation.repository.js";
+import * as messageRepository from "../messages/message.repository.js";
 import type {
   ConversationStatus,
   UpdateConversationData,
@@ -261,13 +262,16 @@ export const deleteConversation = async (
     );
 
   if (conversation) {
-    // Clean up all attachments associated with this conversation
-    try {
-      await deleteConversationAttachments(conversationId, userId);
-    } catch (cleanupErr) {
-      console.warn("[ConversationService] Non-fatal error cleaning attachments for conversation " + conversationId + ":", cleanupErr);
-    }
+    // 1. Clean up all attachments and document chunks associated with this conversation
+    await deleteConversationAttachments(conversationId, userId);
 
+    // 2. Permanently delete all message documents associated with this conversation and user
+    await messageRepository.deleteMessagesByConversationId(
+      conversationId,
+      userId,
+    );
+
+    // 3. Mark conversation as soft-deleted and clear cached summaries/pointers
     const deletedConversation =
       await conversationRepository.softDeleteConversation(
         conversationId,
@@ -300,6 +304,12 @@ export const deleteConversation = async (
     );
 
   if (existingDeleted && existingDeleted.deletedAt !== null) {
+    // Idempotent re-run: ensure attachments and message records are completely cleaned up
+    await deleteConversationAttachments(conversationId, userId);
+    await messageRepository.deleteMessagesByConversationId(
+      conversationId,
+      userId,
+    );
     return existingDeleted;
   }
 

@@ -903,17 +903,10 @@ export const deleteAttachment = async (
     );
   }
 
-  // Delete Cloudinary asset safely
+  // Delete Cloudinary asset safely before removing database record
   if (attachment.cloudinaryPublicId) {
     const resourceType = attachment.type === ATTACHMENT_TYPES.DOCUMENT ? "raw" : "image";
-    try {
-      await deleteFileFromCloudinary(attachment.cloudinaryPublicId, resourceType);
-    } catch (cloudinaryErr) {
-      console.warn(
-        `[AttachmentService] Non-fatal Cloudinary cleanup error for ${attachment.cloudinaryPublicId}:`,
-        cloudinaryErr,
-      );
-    }
+    await deleteFileFromCloudinary(attachment.cloudinaryPublicId, resourceType);
   }
 
   // Delete MongoDB Attachment record and associated document chunks
@@ -978,18 +971,16 @@ export const deleteConversationAttachments = async (
 
   let deletedCount = 0;
   for (const att of attachments) {
+    // 1. Attempt external Cloudinary deletion first if an external asset exists.
+    // Do NOT swallow Cloudinary failures: if external deletion fails, the attachment record
+    // and its cloudinaryPublicId MUST remain preserved in MongoDB so retries can complete it.
     if (att.cloudinaryPublicId) {
       const resourceType = att.type === ATTACHMENT_TYPES.DOCUMENT ? "raw" : "image";
-      try {
-        await deleteFileFromCloudinary(att.cloudinaryPublicId, resourceType);
-      } catch (err) {
-        console.warn(
-          `[AttachmentService] Non-fatal Cloudinary cleanup error for ${att.cloudinaryPublicId}:`,
-          err,
-        );
-      }
+      await deleteFileFromCloudinary(att.cloudinaryPublicId, resourceType);
     }
 
+    // 2. Only after external deletion succeeds or asset is confirmed absent (or for local-only attachments),
+    // permanently remove associated document vector chunks and the MongoDB Attachment record.
     await deleteDocumentChunksByAttachmentId(att._id);
     await attachmentRepository.deleteAttachmentById(att._id);
     deletedCount++;

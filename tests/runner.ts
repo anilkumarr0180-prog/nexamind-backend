@@ -62,6 +62,21 @@ const TEST_SUITES: TestSuite[] = [
     file: "auth-google.test.ts",
   },
   {
+    id: "refresh-token-foundation",
+    name: "Auth: Refresh Token & Cryptographic Foundation (Phase 2.1)",
+    file: "refresh-token-foundation.test.ts",
+  },
+  {
+    id: "auth-renewal-phase22",
+    name: "Auth: Refresh-Token Issuance & PKCE Authorization (Phase 2.2)",
+    file: "auth-renewal-phase22.test.ts",
+  },
+  {
+    id: "auth-refresh-rotation",
+    name: "Auth: Safe Token Rotation & Refresh/Logout (Phase 2.2 Part 2)",
+    file: "auth-refresh-rotation.test.ts",
+  },
+  {
     id: "cors",
     name: "F04: CORS Hardening",
     file: "cors.test.ts",
@@ -120,6 +135,11 @@ const TEST_SUITES: TestSuite[] = [
     id: "conversation-continuity",
     name: "Chat UX Batch 4b: Cross-Conversation Continuity",
     file: "conversation-continuity.test.ts",
+  },
+  {
+    id: "conversation-deletion-lifecycle",
+    name: "Conversations: Data Lifecycle & Message Deletion",
+    file: "conversation-deletion-lifecycle.test.ts",
   },
   {
     id: "persistent-memory-integration",
